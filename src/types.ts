@@ -11,8 +11,7 @@ export interface BuildingType {
   name: string;
   description: string;
   cost: Partial<Record<ResourceType, number>>;
-  inputs: Partial<Record<ResourceType, number>>; // Mandatory ingredients (e.g. Ore -> Ingot)
-  catalysts: Partial<Record<ResourceType, number>>; // Optional boosters (e.g. Tools -> Faster Mining)
+  inputs: Partial<Record<ResourceType, number>>;
   outputs: Partial<Record<ResourceType, number>>;
   labor: number;
   requiresTerrain?: TerrainType[];
@@ -21,14 +20,48 @@ export interface BuildingType {
   upgradeCost?: Partial<Record<ResourceType, number>>;
 }
 
+export interface InputDiagnostic {
+  resource: string;
+  required: number;
+  available: number;
+  distanceLoss: number;
+  inputShortage: number;
+  satisfaction: number; // 0-1 ratio (available / required)
+}
+
+export interface BuildingFlowState {
+  potential: ResourceMap;
+  realized: ResourceMap;
+  consumed: ResourceMap;
+  inputDiagnostics: InputDiagnostic[];
+  efficiency: number; // overall efficiency 0-1
+  adjacencyBonus: number; // 0.1 per identical neighbor
+}
+
+export interface ConstructionSite {
+  targetBuildingId: string;
+  totalCost: Record<string, number>;
+  delivered: Record<string, number>;
+  isUpgrade: boolean;
+  previousBuildingId?: string;
+}
+
+export interface FlowSummary {
+  potential: ResourceMap;
+  realized: ResourceMap;
+  consumed: ResourceMap;
+  lostToDistance: ResourceMap;
+  lostToShortage: ResourceMap;
+}
+
 export interface HexData {
   q: number;
   r: number;
   buildingId?: string;
   hasRoad?: boolean;
-  lastEfficiency?: number; // Overall efficiency
-  inputEfficiencies?: Record<string, number>; // Per-resource efficiency
-  infrastructure?: string[]; // IDs of infrastructure on borders or tile
+  prioritized?: boolean;
+  constructionSite?: ConstructionSite;
+  flowState?: BuildingFlowState;
 }
 
 export interface TerrainHex {
@@ -38,12 +71,7 @@ export interface TerrainHex {
 }
 
 export interface GameState {
-  resources: ResourceMap;
-  rates: ResourceMap; // Net change per tick
-  actualOutput: ResourceMap; // Gross production before consumption
-  potentialOutput: ResourceMap; // Max production if fully staffed/inputs met
-  stockpileTargets: ResourceMap; // Minimum amount to keep (factories won't consume below this)
-  caps: ResourceMap; // Maximum amount to store (factories won't produce above this)
+  flowSummary: FlowSummary;
   grid: Record<string, HexData>;
   terrainGrid: Record<string, TerrainHex>;
   era: number;
