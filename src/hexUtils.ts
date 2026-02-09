@@ -93,3 +93,44 @@ export function parseHexKey(key: string): { q: number, r: number } {
   const [q, r] = key.split(',').map(Number);
   return { q, r };
 }
+
+export function hexDistance(q1: number, r1: number, q2: number, r2: number): number {
+  const dq = q1 - q2;
+  const dr = r1 - r2;
+  return Math.max(Math.abs(dq), Math.abs(dr), Math.abs(dq + dr));
+}
+
+export function getHexInfraEdges(q: number, r: number, infraEdges: Record<string, { type: string }>): { edgeKey: string; neighborQ: number; neighborR: number; type: string }[] {
+  const result: { edgeKey: string; neighborQ: number; neighborR: number; type: string }[] = [];
+  for (const n of getNeighbors(q, r)) {
+    const ek = getEdgeKey(q, r, n.q, n.r);
+    const edge = infraEdges[ek];
+    if (edge) {
+      result.push({ edgeKey: ek, neighborQ: n.q, neighborR: n.r, type: edge.type });
+    }
+  }
+  return result;
+}
+
+export function countHexConnections(q: number, r: number, infraEdges: Record<string, { type: string }>): number {
+  return getHexInfraEdges(q, r, infraEdges).length;
+}
+
+export function parseEdgeKey(edgeKey: string): [{ q: number; r: number }, { q: number; r: number }] {
+  const [a, b] = edgeKey.split('|');
+  const [aq, ar] = a.split(',').map(Number);
+  const [bq, br] = b.split(',').map(Number);
+  return [{ q: aq, r: ar }, { q: bq, r: br }];
+}
+
+export function getHexesInRadius(cq: number, cr: number, radius: number): { q: number, r: number }[] {
+  const hexes: { q: number, r: number }[] = [];
+  for (let q = -radius; q <= radius; q++) {
+    const r1 = Math.max(-radius, -q - radius);
+    const r2 = Math.min(radius, -q + radius);
+    for (let r = r1; r <= r2; r++) {
+      hexes.push({ q: cq + q, r: cr + r });
+    }
+  }
+  return hexes;
+}

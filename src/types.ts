@@ -1,10 +1,23 @@
-export type ResourceType = 'food' | 'wood' | 'stone' | 'iron_ore' | 'coal' | 'iron_ingot' | 'tools' | 'concrete' | 'steel' | 'population';
+export type ResourceType = 'food' | 'wood' | 'stone' | 'iron_ore' | 'coal'
+  | 'iron_ingot' | 'tools' | 'concrete' | 'steel'
+  | 'machinery' | 'goods' | 'population';
 
 export interface ResourceMap {
   [key: string]: number;
 }
 
 export type TerrainType = 'plains' | 'forest' | 'mountain' | 'water';
+
+export type InfrastructureType = 'road' | 'rail' | 'canal';
+
+export type ZoneType = 'mines' | 'farms' | 'settlements' | 't1_goods' | 't2_goods';
+
+export interface BonusZone {
+  id: string;
+  type: ZoneType;
+  centerQ: number;
+  centerR: number;
+}
 
 export interface BuildingType {
   id: string;
@@ -35,7 +48,12 @@ export interface BuildingFlowState {
   consumed: ResourceMap;
   inputDiagnostics: InputDiagnostic[];
   efficiency: number; // overall efficiency 0-1
-  adjacencyBonus: number; // 0.1 per identical neighbor
+  clusterBonus: number; // threshold bonus from cluster size
+  clusterSize: number; // how many buildings in this cluster
+  zoneOutputBonus: number; // bonus zone output multiplier
+  zoneInputReduction: number; // bonus zone input reduction
+  exports: ResourceMap; // resources exported by this building this tick
+  exportEfficiency: number; // 0–1 infra-to-map-edge multiplier
 }
 
 export interface ConstructionSite {
@@ -44,6 +62,21 @@ export interface ConstructionSite {
   delivered: Record<string, number>;
   isUpgrade: boolean;
   previousBuildingId?: string;
+}
+
+export interface InfrastructureEdge {
+  type: InfrastructureType;
+}
+
+export interface InfraEdgeConstructionSite {
+  edgeKey: string;
+  hexA: { q: number; r: number };
+  hexB: { q: number; r: number };
+  targetType: InfrastructureType;
+  totalCost: Record<string, number>;
+  delivered: Record<string, number>;
+  isUpgrade: boolean;
+  previousType?: InfrastructureType;
 }
 
 export interface FlowSummary {
@@ -58,7 +91,6 @@ export interface HexData {
   q: number;
   r: number;
   buildingId?: string;
-  hasRoad?: boolean;
   prioritized?: boolean;
   constructionSite?: ConstructionSite;
   flowState?: BuildingFlowState;
@@ -74,7 +106,12 @@ export interface GameState {
   flowSummary: FlowSummary;
   grid: Record<string, HexData>;
   terrainGrid: Record<string, TerrainHex>;
+  infraEdges: Record<string, InfrastructureEdge>;
+  infraConstructionSites: InfraEdgeConstructionSite[];
   era: number;
   tick: number;
   showNetwork?: boolean;
+  totalExports: ResourceMap; // cumulative exports
+  exportRate: ResourceMap; // per-tick export rate
+  zones: BonusZone[];
 }

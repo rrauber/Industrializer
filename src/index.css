@@ -7,6 +7,12 @@ body {
   padding: 0;
   overflow: hidden;
   background-color: #1a1a1a;
-  color: #e0e0e0;
+  color: #e4e4e7;
   font-family: system-ui, -apple-system, sans-serif;
+}
+
+button, input, select, textarea {
+  color: inherit;
+  background: transparent;
+  border: none;
 }

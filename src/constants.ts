@@ -1,4 +1,4 @@
-import { BuildingType, TerrainType } from './types';
+import { BuildingType, InfrastructureType, ResourceType, ResourceMap, TerrainType, ZoneType } from './types';
 
 export const BUILDINGS: Record<string, BuildingType> = {
   // --- TIER 0: PRIMITIVE (No complex inputs, easy start) ---
@@ -8,7 +8,7 @@ export const BUILDINGS: Record<string, BuildingType> = {
     description: 'Gathers food from the wild. Inefficient.',
     cost: { wood: 5 },
     inputs: { population: 0.1 },
-    outputs: { food: 0.5 },
+    outputs: { food: 0.3 },
     labor: 0,
     requiresTerrain: ['plains', 'forest'],
     unlockEra: 1,
@@ -21,7 +21,7 @@ export const BUILDINGS: Record<string, BuildingType> = {
     description: 'Basic wood gathering operation.',
     cost: {}, // Free to start
     inputs: { population: 0.1 },
-    outputs: { wood: 0.5 },
+    outputs: { wood: 0.3 },
     labor: 0,
     requiresTerrain: ['forest'],
     unlockEra: 1,
@@ -34,7 +34,7 @@ export const BUILDINGS: Record<string, BuildingType> = {
     description: 'Gathers loose stone.',
     cost: { wood: 10 },
     inputs: { population: 0.1 },
-    outputs: { stone: 0.5 },
+    outputs: { stone: 0.3 },
     labor: 0,
     requiresTerrain: ['mountain', 'plains'],
     unlockEra: 1,
@@ -47,7 +47,7 @@ export const BUILDINGS: Record<string, BuildingType> = {
     description: 'Cobbles together basic tools from stone and wood.',
     cost: { wood: 20 },
     inputs: { wood: 0.5, stone: 0.25, population: 0.1 },
-    outputs: { tools: 0.2 },
+    outputs: { tools: 0.1 },
     labor: 0,
     unlockEra: 1,
     upgradesTo: 'tool_factory',
@@ -59,7 +59,7 @@ export const BUILDINGS: Record<string, BuildingType> = {
     description: 'Collects surface iron deposits.',
     cost: { wood: 30, stone: 10 },
     inputs: { population: 0.2, tools: 0.1 },
-    outputs: { iron_ore: 0.5 },
+    outputs: { iron_ore: 0.3 },
     labor: 0,
     requiresTerrain: ['mountain'],
     unlockEra: 1,
@@ -72,7 +72,7 @@ export const BUILDINGS: Record<string, BuildingType> = {
     description: 'Collects surface coal deposits.',
     cost: { wood: 30, stone: 10 },
     inputs: { population: 0.2, tools: 0.1 },
-    outputs: { coal: 0.5 },
+    outputs: { coal: 0.3 },
     labor: 0,
     requiresTerrain: ['mountain'],
     unlockEra: 1,
@@ -85,7 +85,7 @@ export const BUILDINGS: Record<string, BuildingType> = {
     description: 'A primitive furnace for smelting iron using wood fuel.',
     cost: { stone: 40, wood: 20 },
     inputs: { iron_ore: 1, wood: 2, population: 0.2 },
-    outputs: { iron_ingot: 0.5 },
+    outputs: { iron_ingot: 0.25 },
     labor: 0,
     unlockEra: 1,
     upgradesTo: 'smelter',
@@ -99,7 +99,7 @@ export const BUILDINGS: Record<string, BuildingType> = {
     description: 'Produces food from fertile plains.',
     cost: { wood: 50, stone: 20 },
     inputs: { population: 0.1, tools: 0.1 },
-    outputs: { food: 2 },
+    outputs: { food: 1.5 },
     labor: 0,
     requiresTerrain: ['plains'],
     unlockEra: 1,
@@ -110,7 +110,7 @@ export const BUILDINGS: Record<string, BuildingType> = {
     description: 'Industrial wood processing.',
     cost: { wood: 100, tools: 10 },
     inputs: { population: 0.2, tools: 0.2 },
-    outputs: { wood: 3 },
+    outputs: { wood: 2 },
     labor: 0,
     requiresTerrain: ['forest'],
     unlockEra: 2,
@@ -121,7 +121,7 @@ export const BUILDINGS: Record<string, BuildingType> = {
     description: 'Deep stone excavation.',
     cost: { wood: 100, tools: 10 },
     inputs: { population: 0.5, tools: 0.2 },
-    outputs: { stone: 3 },
+    outputs: { stone: 2 },
     labor: 0,
     requiresTerrain: ['mountain'],
     unlockEra: 2,
@@ -130,9 +130,9 @@ export const BUILDINGS: Record<string, BuildingType> = {
     id: 'iron_mine',
     name: 'Deep Iron Mine',
     description: 'Deep shaft mining. Very slow without tools.',
-    cost: { stone: 200, tools: 20 },
+    cost: { stone: 300, tools: 30 },
     inputs: { population: 1.0, tools: 0.5 },
-    outputs: { iron_ore: 4 },
+    outputs: { iron_ore: 2.5 },
     labor: 0,
     requiresTerrain: ['mountain'],
     unlockEra: 2,
@@ -141,9 +141,9 @@ export const BUILDINGS: Record<string, BuildingType> = {
     id: 'coal_mine',
     name: 'Deep Coal Mine',
     description: 'Deep shaft mining. Very slow without tools.',
-    cost: { stone: 200, tools: 20 },
+    cost: { stone: 300, tools: 30 },
     inputs: { population: 1.0, tools: 0.5 },
-    outputs: { coal: 4 },
+    outputs: { coal: 2.5 },
     labor: 0,
     requiresTerrain: ['mountain'],
     unlockEra: 2,
@@ -152,9 +152,9 @@ export const BUILDINGS: Record<string, BuildingType> = {
     id: 'smelter',
     name: 'Smelter',
     description: 'Refines ore. Requires Fuel.',
-    cost: { stone: 100, wood: 50 },
+    cost: { stone: 150, wood: 75 },
     inputs: { iron_ore: 2, coal: 1, population: 0.5 },
-    outputs: { iron_ingot: 1 },
+    outputs: { iron_ingot: 0.75 },
     labor: 0,
     unlockEra: 2,
   },
@@ -162,9 +162,9 @@ export const BUILDINGS: Record<string, BuildingType> = {
     id: 'tool_factory',
     name: 'Tool Factory',
     description: 'Mass produces high-quality tools.',
-    cost: { stone: 200, iron_ingot: 50 },
+    cost: { stone: 300, iron_ingot: 75 },
     inputs: { iron_ingot: 1, wood: 1, coal: 0.5, population: 0.5 },
-    outputs: { tools: 3 },
+    outputs: { tools: 1.5 },
     labor: 0,
     unlockEra: 2,
   },
@@ -172,9 +172,9 @@ export const BUILDINGS: Record<string, BuildingType> = {
     id: 'concrete_factory',
     name: 'Concrete Plant',
     description: 'Mixes concrete.',
-    cost: { stone: 200, iron_ingot: 20 },
+    cost: { stone: 300, iron_ingot: 40 },
     inputs: { stone: 5, coal: 1, population: 0.5 },
-    outputs: { concrete: 2 },
+    outputs: { concrete: 1 },
     labor: 0,
     unlockEra: 3,
   },
@@ -182,12 +182,57 @@ export const BUILDINGS: Record<string, BuildingType> = {
     id: 'steel_mill',
     name: 'Steel Mill',
     description: 'Advanced metallurgy.',
-    cost: { iron_ingot: 100, concrete: 50 },
+    cost: { iron_ingot: 150, concrete: 75 },
     inputs: { iron_ingot: 3, coal: 3, tools: 0.5, population: 1.0 },
-    outputs: { steel: 2 },
+    outputs: { steel: 1 },
     labor: 0,
     unlockEra: 3,
   },
+
+  // --- TIER 2: ADVANCED (Era 3-4, deeper chains) ---
+  machine_works: {
+    id: 'machine_works',
+    name: 'Machine Works',
+    description: 'Produces precision machinery from steel and tools.',
+    cost: { steel: 100, concrete: 50 },
+    inputs: { steel: 2, tools: 1, iron_ingot: 1, population: 1.0 },
+    outputs: { machinery: 0.5 },
+    labor: 0,
+    unlockEra: 3,
+  },
+  manufactory: {
+    id: 'manufactory',
+    name: 'Manufactory',
+    description: 'Mass produces finished goods for export.',
+    cost: { steel: 150, concrete: 75, machinery: 20 },
+    inputs: { iron_ingot: 2, wood: 2, tools: 0.5, machinery: 0.5, population: 2.0 },
+    outputs: { goods: 1.5 },
+    labor: 0,
+    unlockEra: 4,
+  },
+  export_port: {
+    id: 'export_port',
+    name: 'Export Port',
+    description: 'Ships goods abroad. Needs infrastructure path to map edge.',
+    cost: { concrete: 150, steel: 75 },
+    inputs: { goods: 5, tools: 0.2, population: 1.0 },
+    outputs: {}, // produces no flow resources — generates exports instead
+    labor: 0,
+    requiresTerrain: ['plains', 'water'],
+    unlockEra: 4,
+  },
+  trade_depot: {
+    id: 'trade_depot',
+    name: 'Trade Depot',
+    description: 'Absorbs surplus production and exports it. Needs infrastructure path to map edge.',
+    cost: { wood: 15 },
+    inputs: { population: 0.2 },
+    outputs: {}, // generates exports, not flow resources
+    labor: 0,
+    requiresTerrain: ['plains', 'forest'],
+    unlockEra: 1,
+  },
+
   // --- RESIDENTIAL (Population Production) ---
   settlement: {
     id: 'settlement',
@@ -195,7 +240,7 @@ export const BUILDINGS: Record<string, BuildingType> = {
     description: 'A small community. Consumes food to grow population.',
     cost: { wood: 20 },
     inputs: { food: 2 },
-    outputs: { population: 1 },
+    outputs: { population: 0.75 },
     labor: 0,
     requiresTerrain: ['plains', 'forest'],
     unlockEra: 1,
@@ -208,29 +253,83 @@ export const BUILDINGS: Record<string, BuildingType> = {
     description: 'A growing town. Needs robust food supply.',
     cost: { wood: 100, stone: 50 },
     inputs: { food: 5, tools: 0.1 },
-    outputs: { population: 3 },
+    outputs: { population: 2 },
     labor: 0,
     requiresTerrain: ['plains'],
     unlockEra: 2,
     upgradesTo: 'city',
-    upgradeCost: { stone: 200, iron_ingot: 50, concrete: 50 },
+    upgradeCost: { stone: 300, iron_ingot: 75, concrete: 75 },
   },
   city: {
     id: 'city',
     name: 'City',
     description: 'A major metropolis. Requires massive food and goods.',
-    cost: { stone: 200, iron_ingot: 50, concrete: 50 },
+    cost: { stone: 300, iron_ingot: 75, concrete: 75 },
     inputs: { food: 15, tools: 0.5, coal: 0.5 },
-    outputs: { population: 10 },
+    outputs: { population: 6 },
     labor: 0,
     requiresTerrain: ['plains'],
     unlockEra: 3,
   },
 };
 
+export const MAX_INFRA_CONNECTIONS = 3;
+
+export const INFRASTRUCTURE_COSTS: Record<InfrastructureType, Partial<Record<ResourceType, number>>> = {
+  road: {},        // free (instant, as before)
+  rail: { iron_ingot: 10, stone: 20 },
+  canal: { stone: 40, tools: 10 },
+};
+
 export const TERRAIN_COLORS: Record<TerrainType, string> = {
-  plains: '#90be6d', // Green
-  forest: '#43aa8b', // Darker Green
-  mountain: '#777',   // Gray
-  water: '#277da1',   // Blue
+  plains: '#8a7f6a',
+  forest: '#5a6b4a',
+  mountain: '#6b6d70',
+  water: '#3d5a6e',
+};
+
+export const ZONE_RADIUS = 3;
+export const MAX_ZONES_PER_TYPE = 2;
+export const ZONE_OUTPUT_BONUS = 0.15;
+export const ZONE_INPUT_REDUCTION = 0.10;
+
+export const ZONE_TYPES: Record<ZoneType, { name: string; description: string; color: string; buildings: string[] }> = {
+  mines: {
+    name: 'Mining District',
+    description: 'Extraction & quarrying',
+    color: '#ff6b1a',
+    buildings: ['surface_mine', 'surface_coal', 'iron_mine', 'coal_mine', 'quarry', 'stone_camp'],
+  },
+  farms: {
+    name: 'Agricultural Zone',
+    description: 'Food production',
+    color: '#39ff14',
+    buildings: ['forager', 'farm'],
+  },
+  settlements: {
+    name: 'Residential Zone',
+    description: 'Population growth',
+    color: '#ffe414',
+    buildings: ['settlement', 'town', 'city'],
+  },
+  t1_goods: {
+    name: 'Light Industry',
+    description: 'Processing & tools',
+    color: '#00e5ff',
+    buildings: ['workshop', 'bloomery', 'smelter', 'tool_factory', 'lumber_mill'],
+  },
+  t2_goods: {
+    name: 'Heavy Industry',
+    description: 'Advanced manufacturing',
+    color: '#e040fb',
+    buildings: ['concrete_factory', 'steel_mill', 'machine_works', 'manufactory', 'export_port'],
+  },
+};
+
+export const ERA_MILESTONES: Record<number, { requirements: Partial<Record<ResourceType, number>>; label: string }> = {
+  2: { requirements: { food: 250, wood: 250 }, label: 'Agricultural' },
+  3: { requirements: { stone: 750 }, label: 'Mining' },
+  4: { requirements: { iron_ingot: 1500 }, label: 'Metal Processing' },
+  5: { requirements: { tools: 2000, concrete: 1500, steel: 1500 }, label: 'Early Industrial' },
+  6: { requirements: { goods: 3000, machinery: 1500 }, label: 'Late Industrial' },
 };
