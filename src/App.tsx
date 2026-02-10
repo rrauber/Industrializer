@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { HexData, TerrainHex, GameState, ResourceType, TerrainType, InfrastructureType, InfrastructureEdge, FlowSummary, ConstructionSite, InfraEdgeConstructionSite } from './types';
 import { hexKey, getEdgeKey, parseEdgeKey, pointyHexToPixel, getHexCorners, getNeighbors, countHexConnections, getHexesInRadius, hasIntersectionInRadius, edgeHasType, setEdgeType, isPowerInfra, hexDistance } from './hexUtils';
-import { BUILDINGS, INFRASTRUCTURE_COSTS, MAX_INFRA_CONNECTIONS, TERRAIN_COLORS, DEPOSIT_COLORS, ERA_MILESTONES, INFRA_SPACING, INFRA_UNLOCK_ERA, HUB_RADIUS, MAP_RADIUS, HEX_SIZE } from './constants';
+import { BUILDINGS, INFRASTRUCTURE_COSTS, MAX_INFRA_CONNECTIONS, TERRAIN_COLORS, DEPOSIT_COLORS, ERA_MILESTONES, INFRA_SPACING, INFRA_UNLOCK_ERA, HUB_RADIUS, MAP_RADIUS, HEX_SIZE, MARKET_CONFIG, WIN_PRICE_THRESHOLD } from './constants';
 import { computeMarketPrices, computeTradeValue } from './economy';
 import { generateTerrain } from './mapgen';
 import { Zap, Box, Activity, Hammer, X, TrendingUp, Settings, Pause, Play, AlertTriangle, Info } from 'lucide-react';
@@ -26,7 +26,7 @@ const BUILDING_COLORS: Record<string, string> = {
   forager: '#aaddaa', farm: '#aaddaa', wood_camp: '#aaddaa', lumber_mill: '#aaddaa', industrial_farm: '#aaddaa', automated_sawmill: '#aaddaa',
   stone_camp: '#eecfa1', quarry: '#eecfa1', surface_mine: '#eecfa1', surface_coal: '#eecfa1', iron_mine: '#eecfa1', coal_mine: '#eecfa1', automated_quarry: '#eecfa1', automated_iron_mine: '#eecfa1', automated_coal_mine: '#eecfa1',
   bloomery: '#aabccf', smelter: '#aabccf', workshop: '#aabccf', tool_factory: '#aabccf', concrete_factory: '#aabccf', steel_mill: '#aabccf', machine_works: '#aabccf', manufactory: '#aabccf',
-  coal_power_plant: '#aabccf', electric_arc_furnace: '#aabccf', automated_toolworks: '#aabccf', assembly_line: '#aabccf',
+  coal_power_plant: '#aabccf', solar_array: '#aabccf', electric_arc_furnace: '#aabccf', automated_toolworks: '#aabccf', assembly_line: '#aabccf',
   electric_smelter: '#aabccf', electric_kiln: '#aabccf', precision_works: '#aabccf',
   export_port: '#ffe082', trade_depot: '#ffe082', station: '#ffe082',
   settlement: '#ffccbc', town: '#ffccbc', city: '#ffccbc', university: '#ffccbc',
@@ -201,8 +201,10 @@ const App: React.FC = () => {
   const [hoveredHex, setHoveredHex] = useState<string | null>(null);
   const [infraPlacementMode, setInfraPlacementMode] = useState<{ type: InfrastructureType; fromHex: string; } | null>(null);
   const [buildTab, setBuildTab] = useState<'Agri' | 'Mine' | 'Ind' | 'Civic'>('Agri');
+  const [hoveredBuildDelta, setHoveredBuildDelta] = useState<Record<string, number> | null>(null);
   const [showResourceLedger, setShowResourceLedger] = useState(false);
   const [gamePaused, setGamePaused] = useState(false);
+  const [gameWon, setGameWon] = useState(false);
 
   // Pan/zoom — all in refs to avoid React re-renders during interaction
   const viewOffsetRef = useRef({ x: 0, y: 0 });
@@ -324,8 +326,6 @@ const App: React.FC = () => {
     svg.appendChild(g);
     container.appendChild(svg);
 
-    const MAX_DOTS = 150;
-
     const animate = () => {
       const now = performance.now();
       const dots = flowDotsRef.current;
@@ -333,7 +333,6 @@ const App: React.FC = () => {
 
       // Spawn new dots from routes (continuous, not tick-based)
       for (const route of routes) {
-        if (dots.length >= MAX_DOTS) break;
         if (now >= route.nextSpawnTime) {
           dots.push({
             pixels: route.pixels,
@@ -477,10 +476,23 @@ const App: React.FC = () => {
             );
           } else if (milestone.type === 'rate' && milestone.tradeValueTarget) {
             met = tradeValue >= milestone.tradeValueTarget;
+          } else if (milestone.type === 'price' && milestone.priceThreshold && milestone.priceCount) {
+            const crashed = Object.keys(MARKET_CONFIG).filter(res => {
+              const baseVal = MARKET_CONFIG[res].base_value;
+              return (marketPrices[res] || baseVal) <= baseVal * milestone.priceThreshold!;
+            }).length;
+            met = crashed >= milestone.priceCount;
           }
           if (met) era++;
           else break;
         }
+        // Check win condition: all market prices ≤ WIN_PRICE_THRESHOLD
+        const allCrashed = Object.keys(MARKET_CONFIG).every(res => {
+          const baseVal = MARKET_CONFIG[res].base_value;
+          return (marketPrices[res] || baseVal) <= WIN_PRICE_THRESHOLD;
+        });
+        if (allCrashed) setTimeout(() => setGameWon(true), 0);
+
         return { ...prev, grid: mergedGrid, flowSummary, era, tick: prev.tick + 1, exportRate, totalExports, marketPrices, tradeValue, infraEdges: mergedInfraEdges, infraConstructionSites: mergedInfraCS };
       });
 
@@ -499,13 +511,20 @@ const App: React.FC = () => {
         }
         if (totalTime < 0.01) continue;
         const duration = Math.max(2.0, totalTime * 3.0);
-        const spawnInterval = Math.max(800, Math.min(12000, 1000 / (fp.amount * 0.1)));
+        const baseInterval = Math.max(600, Math.min(8000, 800 / (fp.amount * 0.15)));
         newRoutes.push({
           pixels, segTimes, totalTime,
           color: RESOURCE_COLORS[fp.resource] || '#fff',
-          duration, spawnInterval,
-          nextSpawnTime: now + Math.random() * spawnInterval,
+          duration, spawnInterval: baseInterval,
+          nextSpawnTime: now + Math.random() * baseInterval,
         });
+      }
+      // Scale spawn intervals so total dots grow with economy but stay bounded
+      // Target ~500 dots steady-state max; each route has ~(duration/interval) dots alive
+      const estDots = newRoutes.reduce((s, r) => s + r.duration / (r.spawnInterval / 1000), 0);
+      if (estDots > 500) {
+        const scale = estDots / 500;
+        for (const r of newRoutes) r.spawnInterval *= scale;
       }
       flowRoutesRef.current = newRoutes;
     };
@@ -785,6 +804,37 @@ const App: React.FC = () => {
     return { sameTypeEdges, labelHex };
   }, [gameState.grid]);
 
+  // Projected resource impact from buildings under construction
+  const constructionProjection = useMemo(() => {
+    const delta: Record<string, number> = {};
+    for (const [, hex] of Object.entries(gameState.grid)) {
+      if (!hex.constructionSite) continue;
+      const target = BUILDINGS[hex.constructionSite.targetBuildingId];
+      if (!target) continue;
+      // Add projected outputs
+      for (const [res, amt] of Object.entries(target.outputs)) {
+        delta[res] = (delta[res] || 0) + (amt as number);
+      }
+      // Subtract projected inputs (new demand)
+      for (const [res, amt] of Object.entries(target.inputs)) {
+        delta[res] = (delta[res] || 0) - (amt as number);
+      }
+      // If upgrade, subtract old building's contribution (it will be replaced)
+      if (hex.constructionSite.isUpgrade && hex.constructionSite.previousBuildingId) {
+        const prev = BUILDINGS[hex.constructionSite.previousBuildingId];
+        if (prev) {
+          for (const [res, amt] of Object.entries(prev.outputs)) {
+            delta[res] = (delta[res] || 0) - (amt as number);
+          }
+          for (const [res, amt] of Object.entries(prev.inputs)) {
+            delta[res] = (delta[res] || 0) + (amt as number);
+          }
+        }
+      }
+    }
+    return delta;
+  }, [gameState.grid]);
+
   const terrainCorners = getHexCorners({ x: 0, y: 0 }, HEX_SIZE, 30);
   const terrainCornersStr = terrainCorners.map(p => `${p.x},${p.y}`).join(' ');
 
@@ -905,7 +955,7 @@ const App: React.FC = () => {
          </div>
          
          {/* Ticker-style Resources */}
-         <div 
+         <div
             className="flex items-center gap-0.5 overflow-x-auto no-scrollbar mx-4 cursor-pointer hover:bg-white/5 px-1 py-1 rounded-lg transition-colors flex-wrap"
             onClick={() => setShowResourceLedger(true)}
             title="Open Resource Ledger"
@@ -918,18 +968,33 @@ const App: React.FC = () => {
                // Show unmet demand if buildings are short, otherwise production headroom
                const net = lossShort > 0 ? -lossShort : realized - potDem;
 
-               if (realized <= 0 && potDem <= 0) return null;
+               // Projected change from buildings under construction
+               const projDelta = constructionProjection[res] || 0;
+               // Hover preview: projected change if this building were placed/upgraded
+               const hoverDelta = hoveredBuildDelta ? (hoveredBuildDelta[res] || 0) : 0;
+               const totalProj = projDelta + hoverDelta;
+
+               if (realized <= 0 && potDem <= 0 && totalProj === 0) return null;
                const color = RESOURCE_COLORS[res];
+               const isHoverAffected = hoverDelta !== 0;
+               const wouldGoNegative = isHoverAffected && (net + projDelta + hoverDelta) < 0 && (net + projDelta) >= 0;
                return (
-                  <div key={res} className="flex items-center gap-0.5 min-w-max px-1 py-0.5 rounded" title={res.replace('_', ' ')}>
+                  <div key={res} className={`flex items-center gap-0.5 min-w-max px-1 py-0.5 rounded ${isHoverAffected ? (wouldGoNegative ? 'bg-rose-500/20 ring-1 ring-rose-500/40' : 'bg-white/10 ring-1 ring-white/20') : ''}`} title={res.replace('_', ' ')}>
                      <div className="w-4 h-4 flex items-center justify-center">
                         <svg width="15" height="15" viewBox="-12 -12 24 24">
                            {ResourceIcons[res] && React.createElement(ResourceIcons[res], { color, size: 15 })}
                         </svg>
                      </div>
-                     <span className={`text-[10px] font-mono font-bold ${net > 0 ? 'text-emerald-400' : net < 0 ? 'text-rose-400' : 'text-zinc-300'}`}>
-                        {net > 0 ? '+' : ''}{net.toFixed(1)}
-                     </span>
+                     <div className="flex flex-col items-start">
+                        <span className={`text-[10px] font-mono font-bold leading-none ${net > 0 ? 'text-emerald-400' : net < 0 ? 'text-rose-400' : 'text-zinc-300'}`}>
+                           {net > 0 ? '+' : ''}{net.toFixed(1)}
+                        </span>
+                        {totalProj !== 0 && (
+                           <span className={`text-[8px] font-mono leading-none ${totalProj > 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
+                              {totalProj > 0 ? '+' : ''}{totalProj.toFixed(1)}
+                           </span>
+                        )}
+                     </div>
                   </div>
                )
             })}
@@ -945,8 +1010,52 @@ const App: React.FC = () => {
       <div className="absolute top-16 left-4 bottom-4 w-[360px] flex flex-col gap-3 pointer-events-none z-20">
          
          {/* Objective Card */}
-         {ERA_MILESTONES[gameState.era + 1] && (() => {
+         {(ERA_MILESTONES[gameState.era + 1] || (!gameWon && gameState.era >= 6)) && (() => {
            const milestone = ERA_MILESTONES[gameState.era + 1];
+           // Win condition objective when no more era milestones
+           if (!milestone) {
+             const allRes = Object.keys(MARKET_CONFIG);
+             const crashed = allRes.filter(res => {
+               const baseVal = MARKET_CONFIG[res].base_value;
+               return (gameState.marketPrices[res] || baseVal) <= WIN_PRICE_THRESHOLD;
+             });
+             const pct = Math.min(1, crashed.length / allRes.length);
+             return (
+               <div className="glass-panel rounded-xl p-4 pointer-events-auto">
+                 <div className="flex justify-between items-center mb-3">
+                   <span className="text-xs font-bold text-zinc-400 uppercase tracking-wider flex items-center gap-2">
+                     <TrendingUp size={14} className="text-amber-400" /> Final Objective
+                   </span>
+                   <span className="text-[10px] bg-amber-500/10 text-amber-400 px-2 py-0.5 rounded border border-amber-500/20 font-bold uppercase">Total Commoditization</span>
+                 </div>
+                 <div className="space-y-2">
+                   <div className="flex justify-between items-center text-xs font-medium text-zinc-300">
+                     <span className="text-[11px] font-bold">All prices below ${WIN_PRICE_THRESHOLD.toFixed(2)}</span>
+                     <span className="font-mono text-zinc-400 text-[11px]">{crashed.length} <span className="text-zinc-700">/</span> {allRes.length}</span>
+                   </div>
+                   <div className="h-2 bg-black/40 rounded-full overflow-hidden border border-white/5">
+                     <div className="h-full transition-all duration-500 bg-amber-500" style={{ width: `${pct * 100}%` }} />
+                   </div>
+                   <div className="flex flex-wrap gap-1 mt-1">
+                     {allRes.map(res => {
+                       const baseVal = MARKET_CONFIG[res].base_value;
+                       const price = gameState.marketPrices[res] ?? baseVal;
+                       const isCrashed = price <= WIN_PRICE_THRESHOLD;
+                       const resColor = RESOURCE_COLORS[res as ResourceType] || '#888';
+                       return (
+                         <div key={res} className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-mono border ${isCrashed ? 'bg-amber-500/10 border-amber-500/30 text-amber-400' : 'bg-black/20 border-white/5 text-zinc-500'}`}>
+                           <svg width="10" height="10" viewBox="-12 -12 24 24">
+                             {ResourceIcons[res] && React.createElement(ResourceIcons[res], { color: isCrashed ? resColor : '#555', size: 10 })}
+                           </svg>
+                           ${price.toFixed(2)}
+                         </div>
+                       );
+                     })}
+                   </div>
+                 </div>
+               </div>
+             );
+           }
            return (
            <div className="glass-panel rounded-xl p-4 pointer-events-auto">
               <div className="flex justify-between items-center mb-3">
@@ -990,6 +1099,44 @@ const App: React.FC = () => {
                           </div>
                           <div className="h-2 bg-black/40 rounded-full overflow-hidden border border-white/5">
                              <div className="h-full transition-all duration-500 bg-emerald-500" style={{ width: `${pct * 100}%` }} />
+                          </div>
+                       </div>
+                    );
+                 })()}
+                 {milestone.type === 'price' && milestone.priceThreshold && milestone.priceCount && (() => {
+                    const allRes = Object.keys(MARKET_CONFIG);
+                    const crashed = allRes.filter(res => {
+                       const baseVal = MARKET_CONFIG[res].base_value;
+                       return (gameState.marketPrices[res] || baseVal) <= baseVal * milestone.priceThreshold!;
+                    });
+                    const pct = Math.min(1, crashed.length / milestone.priceCount);
+                    return (
+                       <div className="space-y-2">
+                          <div className="flex justify-between items-center text-xs font-medium text-zinc-300">
+                             <div className="flex items-center gap-2">
+                                <TrendingUp size={14} className="text-emerald-400" />
+                                <span className="text-[11px] font-bold">Crash prices below {Math.round(milestone.priceThreshold * 100)}% base</span>
+                             </div>
+                             <span className="font-mono text-zinc-400 text-[11px]">{crashed.length} <span className="text-zinc-700">/</span> {milestone.priceCount}</span>
+                          </div>
+                          <div className="h-2 bg-black/40 rounded-full overflow-hidden border border-white/5">
+                             <div className="h-full transition-all duration-500 bg-emerald-500" style={{ width: `${pct * 100}%` }} />
+                          </div>
+                          <div className="flex flex-wrap gap-1 mt-1">
+                             {allRes.map(res => {
+                                const baseVal = MARKET_CONFIG[res].base_value;
+                                const price = gameState.marketPrices[res] ?? baseVal;
+                                const isCrashed = price <= baseVal * milestone.priceThreshold!;
+                                const resColor = RESOURCE_COLORS[res as ResourceType] || '#888';
+                                return (
+                                   <div key={res} className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-mono border ${isCrashed ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400' : 'bg-black/20 border-white/5 text-zinc-500'}`}>
+                                      <svg width="10" height="10" viewBox="-12 -12 24 24">
+                                         {ResourceIcons[res] && React.createElement(ResourceIcons[res], { color: isCrashed ? resColor : '#555', size: 10 })}
+                                      </svg>
+                                      ${price.toFixed(2)}
+                                   </div>
+                                );
+                             })}
                           </div>
                        </div>
                     );
@@ -1182,7 +1329,7 @@ const App: React.FC = () => {
                                     </div>
                                     <span className="flex-1 capitalize text-zinc-300">{diag.resource.replace('_', ' ')}</span>
                                     <span className={`font-mono ${diag.satisfaction >= 1 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                                       {(selectedHexData.flowState?.consumed[diag.resource] || 0).toFixed(1)}
+                                       {((selectedHexData.flowState?.consumed[diag.resource] || 0) + diag.distanceLoss).toFixed(1)}
                                        <span className="text-zinc-600 ml-1">/ {diag.required.toFixed(1)}</span>
                                     </span>
                                  </div>
@@ -1219,7 +1366,14 @@ const App: React.FC = () => {
                                  return (
                                     <div className="col-span-2 space-y-2 mt-2 pt-4 border-t border-white/5">
                                        <div className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Available Upgrade</div>
-                                       <button onClick={upgradeBuilding} className="w-full flex flex-col items-center gap-2 p-3 rounded-xl bg-indigo-500/10 border border-indigo-500/20 hover:bg-indigo-500/20 transition-all group">
+                                       <button onClick={upgradeBuilding} onMouseEnter={() => {
+                                          const d: Record<string, number> = {};
+                                          for (const [r, a] of Object.entries(target.outputs)) d[r] = (d[r] || 0) + (a as number);
+                                          for (const [r, a] of Object.entries(target.inputs)) d[r] = (d[r] || 0) - (a as number);
+                                          for (const [r, a] of Object.entries(selectedBuilding.outputs)) d[r] = (d[r] || 0) - (a as number);
+                                          for (const [r, a] of Object.entries(selectedBuilding.inputs)) d[r] = (d[r] || 0) + (a as number);
+                                          setHoveredBuildDelta(d);
+                                       }} onMouseLeave={() => setHoveredBuildDelta(null)} className="w-full flex flex-col items-center gap-2 p-3 rounded-xl bg-indigo-500/10 border border-indigo-500/20 hover:bg-indigo-500/20 transition-all group">
                                           <div className="flex items-center gap-3 w-full">
                                              <div className="w-10 h-10 rounded-lg bg-[#0a0e12] border border-white/10 flex items-center justify-center">
                                                 <svg width="24" height="24" viewBox="-12 -12 24 24">
@@ -1416,7 +1570,7 @@ const App: React.FC = () => {
                                  const groups: Record<string, string[]> = {
                                     'Agri': ['forager', 'farm', 'industrial_farm', 'wood_camp', 'lumber_mill', 'automated_sawmill'],
                                     'Mine': ['stone_camp', 'quarry', 'automated_quarry', 'surface_mine', 'iron_mine', 'automated_iron_mine', 'surface_coal', 'coal_mine', 'automated_coal_mine'],
-                                    'Ind': ['bloomery', 'smelter', 'workshop', 'tool_factory', 'concrete_factory', 'steel_mill', 'machine_works', 'manufactory', 'coal_power_plant', 'electric_arc_furnace', 'electric_smelter', 'electric_kiln', 'precision_works', 'automated_toolworks', 'assembly_line'],
+                                    'Ind': ['bloomery', 'smelter', 'workshop', 'tool_factory', 'concrete_factory', 'steel_mill', 'machine_works', 'manufactory', 'coal_power_plant', 'solar_array', 'electric_arc_furnace', 'electric_smelter', 'electric_kiln', 'precision_works', 'automated_toolworks', 'assembly_line'],
                                     'Civic': ['settlement', 'town', 'city', 'trade_depot', 'station', 'export_port', 'university']
                                  };
                                  return groups[buildTab].map(id => {
@@ -1434,9 +1588,16 @@ const App: React.FC = () => {
                                     }
 
                                     return (
-                                       <button 
+                                       <button
                                           key={id}
                                           onClick={() => buildBuilding(id)}
+                                          onMouseEnter={() => {
+                                             const d: Record<string, number> = {};
+                                             for (const [r, a] of Object.entries(b.outputs)) d[r] = (d[r] || 0) + (a as number);
+                                             for (const [r, a] of Object.entries(b.inputs)) d[r] = (d[r] || 0) - (a as number);
+                                             setHoveredBuildDelta(d);
+                                          }}
+                                          onMouseLeave={() => setHoveredBuildDelta(null)}
                                           className="glass-card flex flex-col items-center p-3 rounded-xl gap-2 text-center group relative overflow-hidden"
                                        >
                                           <div className="absolute inset-0 bg-gradient-to-br from-white/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />
@@ -1801,6 +1962,52 @@ const App: React.FC = () => {
                  </table>
               </div>
            </div>
+        </div>
+      )}
+
+      {/* Win Screen Overlay */}
+      {gameWon && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-sm">
+          <div className="max-w-lg w-full mx-4 bg-zinc-900 rounded-2xl border border-amber-500/30 shadow-2xl shadow-amber-500/10 overflow-hidden">
+            <div className="bg-gradient-to-b from-amber-500/20 to-transparent p-8 text-center">
+              <div className="text-5xl mb-4">
+                <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="#f59e0b" strokeWidth="1.5" className="mx-auto">
+                  <path d="M12 2L15.09 8.26L22 9.27L17 14.14L18.18 21.02L12 17.77L5.82 21.02L7 14.14L2 9.27L8.91 8.26L12 2Z" fill="#f59e0b" fillOpacity="0.2"/>
+                  <path d="M12 2L15.09 8.26L22 9.27L17 14.14L18.18 21.02L12 17.77L5.82 21.02L7 14.14L2 9.27L8.91 8.26L12 2Z"/>
+                </svg>
+              </div>
+              <h2 className="text-2xl font-bold text-amber-400 mb-2">Total Commoditization</h2>
+              <p className="text-zinc-400 text-sm">Every resource has been driven below ${WIN_PRICE_THRESHOLD.toFixed(2)} per unit. Your industrial machine has flooded the global market.</p>
+            </div>
+            <div className="px-8 pb-4">
+              <div className="grid grid-cols-3 gap-2 mb-6">
+                {Object.keys(MARKET_CONFIG).map(res => {
+                  const price = gameState.marketPrices[res] ?? MARKET_CONFIG[res].base_value;
+                  const resColor = RESOURCE_COLORS[res as ResourceType] || '#888';
+                  return (
+                    <div key={res} className="flex items-center gap-1.5 px-2 py-1.5 rounded bg-amber-500/5 border border-amber-500/20">
+                      <svg width="12" height="12" viewBox="-12 -12 24 24">
+                        {ResourceIcons[res] && React.createElement(ResourceIcons[res], { color: resColor, size: 12 })}
+                      </svg>
+                      <span className="text-[10px] text-zinc-400 capitalize flex-1">{res.replace('_', ' ')}</span>
+                      <span className="text-[10px] font-mono text-amber-400">${price.toFixed(2)}</span>
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="text-center text-xs text-zinc-500 mb-4">
+                Completed in {gameState.tick} ticks — Era {gameState.era}
+              </div>
+            </div>
+            <div className="px-8 pb-8 flex gap-3">
+              <button onClick={() => setGameWon(false)} className="flex-1 py-2.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-sm font-medium transition-colors border border-white/5">
+                Keep Playing
+              </button>
+              <button onClick={() => { setGameWon(false); resetGame(); }} className="flex-1 py-2.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-400 text-sm font-medium transition-colors border border-amber-500/30">
+                New Game
+              </button>
+            </div>
+          </div>
         </div>
       )}
 

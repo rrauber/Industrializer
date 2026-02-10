@@ -299,6 +299,21 @@ export const BuildingIcons: Record<string, React.FC<IconProps>> = {
     </SvgWrapper>
   ),
 
+  solar_array: (props) => (
+    <SvgWrapper {...props}>
+      <rect x="3" y="12" width="8" height="6" rx="0.5" transform="skewY(-10)" />
+      <rect x="13" y="12" width="8" height="6" rx="0.5" transform="skewY(-10)" />
+      <line x1="7" y1="18" x2="7" y2="22" strokeWidth="1.5" />
+      <line x1="17" y1="18" x2="17" y2="22" strokeWidth="1.5" />
+      <circle cx="12" cy="5" r="3" fill="none" strokeWidth="1" />
+      <line x1="12" y1="0" x2="12" y2="2" strokeWidth="0.8" />
+      <line x1="16" y1="5" x2="18" y2="5" strokeWidth="0.8" />
+      <line x1="6" y1="5" x2="8" y2="5" strokeWidth="0.8" />
+      <line x1="14.8" y1="2.2" x2="16" y2="1" strokeWidth="0.8" />
+      <line x1="9.2" y1="2.2" x2="8" y2="1" strokeWidth="0.8" />
+    </SvgWrapper>
+  ),
+
   electric_arc_furnace: (props) => (
     <SvgWrapper {...props}>
       <path d="M6 19h12" />

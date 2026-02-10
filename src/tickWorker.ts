@@ -27,12 +27,32 @@ self.onmessage = (e: MessageEvent) => {
 
     const result = simulateTick(grid, terrainGrid, terrainAssociations, infraEdges, infraConstructionSites);
 
-    // Compute paths and per-segment visual costs for top flow pairs (by amount)
-    const sortedPairs = [...result.flowPairs].sort((a, b) => b.amount - a.amount);
-    const MAX_ROUTES = 80;
+    // Weighted random sample of flow pairs (sqrt-weighted by amount)
+    const MAX_ROUTES = 300;
+    const allPairs = result.flowPairs;
     const routeData: { fp: FlowPair; path: { q: number; r: number }[]; segCosts: number[] }[] = [];
-    for (const fp of sortedPairs) {
-      if (routeData.length >= MAX_ROUTES) break;
+    let sampled: FlowPair[];
+    if (allPairs.length <= MAX_ROUTES) {
+      sampled = allPairs;
+    } else {
+      const weights = allPairs.map(fp => Math.sqrt(fp.amount));
+      const totalWeight = weights.reduce((s, w) => s + w, 0);
+      const picked = new Set<number>();
+      sampled = [];
+      while (sampled.length < MAX_ROUTES && picked.size < allPairs.length) {
+        let r = Math.random() * totalWeight;
+        for (let i = 0; i < allPairs.length; i++) {
+          if (picked.has(i)) continue;
+          r -= weights[i];
+          if (r <= 0) {
+            picked.add(i);
+            sampled.push(allPairs[i]);
+            break;
+          }
+        }
+      }
+    }
+    for (const fp of sampled) {
       const path = findPath(fp.sourceKey, fp.destKey, result.grid, result.infraEdges);
       if (path && path.length >= 2) {
         routeData.push({ fp, path, segCosts: computeSegCosts(path, result.infraEdges) });

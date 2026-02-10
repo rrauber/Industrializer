@@ -376,7 +376,7 @@ const INFRA_EXPORT_EFFICIENCY: Record<string, number> = {
 
 const ALL_EXPORTABLE_RESOURCES: string[] = [
   'food', 'wood', 'stone', 'iron_ore', 'coal',
-  'iron_ingot', 'tools', 'concrete', 'steel', 'machinery', 'goods', 'electricity',
+  'iron_ingot', 'tools', 'concrete', 'steel', 'machinery', 'goods',
 ];
 
 function getExportEfficiency(startKey: string, grid: Record<string, HexData>, infraEdges: Record<string, InfrastructureEdge>, getTerrains: GetTerrainsFn): number {

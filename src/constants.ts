@@ -297,9 +297,9 @@ export const BUILDINGS: Record<string, BuildingType> = {
   electric_arc_furnace: {
     id: 'electric_arc_furnace',
     name: 'Electric Arc Furnace',
-    description: 'Electric steelmaking. Skips coal, more efficient.',
+    description: 'Electric steelmaking. Replaces coal with electricity.',
     cost: { steel: 200, concrete: 100, machinery: 50 },
-    inputs: { iron_ore: 3, electricity: 2, tools: 0.5, population: 0.5 },
+    inputs: { iron_ingot: 3, electricity: 2, tools: 0.5, population: 0.5 },
     outputs: { steel: 2 },
     labor: 0,
     unlockEra: 4,
@@ -309,7 +309,7 @@ export const BUILDINGS: Record<string, BuildingType> = {
     name: 'Automated Toolworks',
     description: 'Electric tool production. No wood or coal needed.',
     cost: { steel: 150, concrete: 50, machinery: 30 },
-    inputs: { iron_ingot: 2, electricity: 1, population: 0.3 },
+    inputs: { steel: 1, machinery: 0.25, electricity: 1, population: 0.3 },
     outputs: { tools: 5 },
     labor: 0,
     unlockEra: 4,
@@ -340,7 +340,7 @@ export const BUILDINGS: Record<string, BuildingType> = {
     name: 'Electric Kiln',
     description: 'Electric concrete production. No coal, higher output.',
     cost: { steel: 200, concrete: 100, machinery: 50 },
-    inputs: { stone: 5, electricity: 1, population: 0.3 },
+    inputs: { stone: 3, machinery: 0.1, electricity: 1, population: 0.3 },
     outputs: { concrete: 2.5 },
     labor: 0,
     unlockEra: 4,
@@ -394,7 +394,7 @@ export const BUILDINGS: Record<string, BuildingType> = {
     name: 'Automated Iron Mine',
     description: 'Electric deep mining. Double iron output, less labor.',
     cost: { steel: 200, concrete: 100, machinery: 50 },
-    inputs: { electricity: 2, tools: 0.3, population: 0.3 },
+    inputs: { electricity: 2, tools: 0.2, machinery: 0.1, population: 0.3 },
     outputs: { iron_ore: 5 },
     labor: 0,
     requiresTerrain: ['mountain'],
@@ -406,7 +406,7 @@ export const BUILDINGS: Record<string, BuildingType> = {
     name: 'Automated Coal Mine',
     description: 'Electric deep mining. Double coal output, less labor.',
     cost: { steel: 200, concrete: 100, machinery: 50 },
-    inputs: { electricity: 2, tools: 0.3, population: 0.3 },
+    inputs: { electricity: 2, tools: 0.2, machinery: 0.1, population: 0.3 },
     outputs: { coal: 5 },
     labor: 0,
     requiresTerrain: ['mountain'],
@@ -541,29 +541,32 @@ export const ZONE_TYPES: Record<string, { name: string; description: string; col
 };
 
 export const ERA_MILESTONES: Record<number, {
-  type: 'cumulative' | 'rate';
+  type: 'cumulative' | 'rate' | 'price';
   requirements?: Partial<Record<ResourceType, number>>;
   tradeValueTarget?: number;
+  priceThreshold?: number;
+  priceCount?: number;
   label: string;
 }> = {
   2: { type: 'cumulative', requirements: { food: 250, wood: 250 }, label: 'Agriculture' },
   3: { type: 'cumulative', requirements: { iron_ingot: 500 }, label: 'Industry' },
   4: { type: 'cumulative', requirements: { steel: 1500 }, label: 'Industrialization' },
-  5: { type: 'rate', tradeValueTarget: 15, label: 'Global Market' },
-  6: { type: 'rate', tradeValueTarget: 40, label: 'Megaregion' },
+  5: { type: 'price', priceThreshold: 0.5, priceCount: 5, label: 'Global Trade' },
+  6: { type: 'price', priceThreshold: 0.25, priceCount: 8, label: 'Market Dominance' },
 };
 
+export const WIN_PRICE_THRESHOLD = 0.10;
+
 export const MARKET_CONFIG: Record<string, { base_value: number; saturation: number }> = {
-  food:        { base_value: 1,   saturation: 500 },
-  wood:        { base_value: 1,   saturation: 500 },
-  stone:       { base_value: 1,   saturation: 500 },
-  iron_ore:    { base_value: 1.5, saturation: 400 },
-  coal:        { base_value: 1.5, saturation: 400 },
-  iron_ingot:  { base_value: 3,   saturation: 1000 },
-  tools:       { base_value: 4,   saturation: 1500 },
-  concrete:    { base_value: 3,   saturation: 1000 },
-  steel:       { base_value: 5,   saturation: 1500 },
-  machinery:   { base_value: 8,   saturation: 2000 },
-  goods:       { base_value: 10,  saturation: 2000 },
-  electricity: { base_value: 2,   saturation: 800 },
+  food:        { base_value: 1,   saturation: 1000 },
+  wood:        { base_value: 1,   saturation: 1000 },
+  stone:       { base_value: 1,   saturation: 1000 },
+  iron_ore:    { base_value: 1.5, saturation: 800 },
+  coal:        { base_value: 1.5, saturation: 800 },
+  iron_ingot:  { base_value: 3,   saturation: 2000 },
+  tools:       { base_value: 4,   saturation: 3000 },
+  concrete:    { base_value: 3,   saturation: 2000 },
+  steel:       { base_value: 5,   saturation: 3000 },
+  machinery:   { base_value: 8,   saturation: 4000 },
+  goods:       { base_value: 10,  saturation: 4000 },
 };
