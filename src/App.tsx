@@ -1,19 +1,11 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { HexData, TerrainHex, GameState, ResourceType, TerrainType, InfrastructureType, InfrastructureEdge, FlowSummary, ConstructionSite, InfraEdgeConstructionSite } from './types';
-import { hexKey, getEdgeKey, parseEdgeKey, pointyHexToPixel, pixelToPointyHex, getHexCorners, getNeighbors, countHexConnections, getHexesInRadius, hasIntersectionInRadius, edgeHasType, setEdgeType, isPowerInfra, hexDistance } from './hexUtils';
-import { BUILDINGS, INFRASTRUCTURE_COSTS, MAX_INFRA_CONNECTIONS, TERRAIN_COLORS, ERA_MILESTONES, INFRA_SPACING, INFRA_UNLOCK_ERA, HUB_RADIUS } from './constants';
+import { hexKey, getEdgeKey, parseEdgeKey, pointyHexToPixel, getHexCorners, getNeighbors, countHexConnections, getHexesInRadius, hasIntersectionInRadius, edgeHasType, setEdgeType, isPowerInfra, hexDistance } from './hexUtils';
+import { BUILDINGS, INFRASTRUCTURE_COSTS, MAX_INFRA_CONNECTIONS, TERRAIN_COLORS, DEPOSIT_COLORS, ERA_MILESTONES, INFRA_SPACING, INFRA_UNLOCK_ERA, HUB_RADIUS, MAP_RADIUS, HEX_SIZE } from './constants';
 import { computeMarketPrices, computeTradeValue } from './economy';
-import { Zap, Box, Activity, Hammer, X, TrendingUp, Settings, Pause, Play } from 'lucide-react';
+import { generateTerrain } from './mapgen';
+import { Zap, Box, Activity, Hammer, X, TrendingUp, Settings, Pause, Play, AlertTriangle, Info } from 'lucide-react';
 import { BuildingIcons, ResourceIcons } from './icons';
-
-const LARGE_HEX_SIZE = 50;
-const HEX_SIZE = LARGE_HEX_SIZE / 2;
-const TERRAIN_RADIUS = 5;
-const GRID_RADIUS = 2 * TERRAIN_RADIUS + 1;
-
-const BUILDING_OFFSET_X = 0;
-const BUILDING_OFFSET_Y = -HEX_SIZE;
-const BUILDING_ROT_ANGLE = 0;
 
 function emptyFlowSummary(): FlowSummary {
   return { potential: {}, potentialDemand: {}, realized: {}, consumed: {}, exportConsumed: {}, lostToDistance: {}, lostToShortage: {} };
@@ -40,95 +32,46 @@ const BUILDING_COLORS: Record<string, string> = {
   settlement: '#ffccbc', town: '#ffccbc', city: '#ffccbc', university: '#ffccbc',
 };
 
-function migrateOldSave(parsed: any): GameState {
-  // Migration logic kept same as before for safety
-  const grid = parsed.grid || {};
-  for (let q = -GRID_RADIUS; q <= GRID_RADIUS; q++) {
-    const r1 = Math.max(-GRID_RADIUS, -q - GRID_RADIUS);
-    const r2 = Math.min(GRID_RADIUS, -q + GRID_RADIUS);
-    for (let r = r1; r <= r2; r++) {
-      const key = hexKey(q, r);
-      if (!grid[key]) grid[key] = { q, r };
-    }
-  }
-  for (const key of Object.keys(grid)) {
-    const hex = grid[key];
-    if (hex.hasRoad) {
-      hex.infrastructure = 'road';
-      delete hex.hasRoad;
-    }
-    if (hex.flowState && 'adjacencyBonus' in hex.flowState) {
-      hex.flowState.clusterBonus = hex.flowState.adjacencyBonus;
-      hex.flowState.clusterSize = 1;
-      delete hex.flowState.adjacencyBonus;
-    }
-    delete hex.lastEfficiency;
-    delete hex.inputEfficiencies;
-  }
-  let infraEdges: Record<string, any> = parsed.infraEdges || {};
-  if (!parsed.infraEdges) {
-    const infraHexes = Object.entries(grid).filter(([, h]: [string, any]) => h.infrastructure);
-    for (const [, hex] of infraHexes as [string, any][]) {
-      for (const n of getNeighbors(hex.q, hex.r)) {
-        const nk = hexKey(n.q, n.r);
-        const nHex = grid[nk];
-        if (nHex && (nHex as any).infrastructure) {
-          const ek = getEdgeKey(hex.q, hex.r, n.q, n.r);
-          if (!infraEdges[ek]) {
-            const INFRA_ORDER: Record<string, number> = { road: 2, rail: 1, canal: 0 };
-            const hexType = hex.infrastructure as InfrastructureType;
-            const nType = (nHex as any).infrastructure as InfrastructureType;
-            const type = (INFRA_ORDER[hexType] ?? 2) >= (INFRA_ORDER[nType] ?? 2) ? hexType : nType;
-            infraEdges[ek] = setEdgeType(undefined, type);
-          }
-        }
-      }
-    }
-    for (const key of Object.keys(grid)) {
-      delete (grid[key] as any).infrastructure;
-      if (grid[key].constructionSite && (grid[key].constructionSite as any).targetInfrastructure) {
-        delete grid[key].constructionSite;
-      }
-    }
-  } else {
-    // Migrate old { type: string } edges to new { transport?, power? } format
-    const migrated: Record<string, any> = {};
-    for (const [ek, edge] of Object.entries(infraEdges)) {
-      if ((edge as any).type) {
-        migrated[ek] = setEdgeType(undefined, (edge as any).type as InfrastructureType);
-      } else {
-        migrated[ek] = edge;
-      }
-    }
-    infraEdges = migrated;
-  }
-  // Clean up removed buildings from old saves
-  const removedBuildings = new Set(['solar_farm', 'battery_plant', 'chip_foundry']);
-  for (const key of Object.keys(grid)) {
-    const hex = grid[key];
-    if (hex.buildingId && removedBuildings.has(hex.buildingId)) {
-      delete hex.buildingId;
-      delete hex.constructionSite;
-      delete hex.flowState;
-    }
-    if (hex.constructionSite && removedBuildings.has(hex.constructionSite.targetBuildingId)) {
-      delete hex.constructionSite;
-    }
-  }
-  // Cap era at 7 for old saves that were era 8
-  const era = Math.min(parsed.era || 1, 7);
+function loadSave(parsed: any): GameState | null {
+  // Force reset if save doesn't have mapSeed (old coordinate system)
+  if (!parsed.mapSeed) return null;
   return {
     flowSummary: parsed.flowSummary || emptyFlowSummary(),
-    grid,
-    terrainGrid: parsed.terrainGrid,
-    infraEdges,
+    grid: parsed.grid || {},
+    terrainGrid: parsed.terrainGrid || {},
+    infraEdges: parsed.infraEdges || {},
     infraConstructionSites: parsed.infraConstructionSites || [],
-    era,
+    era: Math.min(parsed.era || 1, 6),
     tick: parsed.tick || 0,
     totalExports: parsed.totalExports || {},
     exportRate: parsed.exportRate || {},
     tradeValue: parsed.tradeValue || 0,
     marketPrices: parsed.marketPrices || {},
+    mapSeed: parsed.mapSeed,
+  };
+}
+
+function createNewGame(): GameState {
+  const seed = Date.now() ^ (Math.random() * 0xffffffff);
+  const { terrainGrid, mapSeed } = generateTerrain(MAP_RADIUS, seed);
+  const grid: Record<string, HexData> = {};
+  for (const key of Object.keys(terrainGrid)) {
+    const t = terrainGrid[key];
+    grid[key] = { q: t.q, r: t.r };
+  }
+  return {
+    flowSummary: emptyFlowSummary(),
+    grid,
+    terrainGrid,
+    infraEdges: {},
+    infraConstructionSites: [],
+    era: 1,
+    tick: 0,
+    totalExports: {},
+    exportRate: {},
+    tradeValue: 0,
+    marketPrices: {},
+    mapSeed,
   };
 }
 
@@ -221,10 +164,7 @@ const HexOverlay = React.memo(({ hex, isSelected, isLabelHex, isInCluster, sameT
 });
 
 function getHexPixelPos(hex: { q: number; r: number }) {
-  const { x: raw_x, y: raw_y } = pointyHexToPixel(hex.q, hex.r, HEX_SIZE);
-  const base_x = raw_x * Math.cos(BUILDING_ROT_ANGLE) - raw_y * Math.sin(BUILDING_ROT_ANGLE);
-  const base_y = raw_x * Math.sin(BUILDING_ROT_ANGLE) + raw_y * Math.cos(BUILDING_ROT_ANGLE);
-  return { x: base_x + BUILDING_OFFSET_X, y: base_y + BUILDING_OFFSET_Y };
+  return pointyHexToPixel(hex.q, hex.r, HEX_SIZE);
 }
 
 function getConstructionProgress(site: ConstructionSite): number {
@@ -243,44 +183,14 @@ const App: React.FC = () => {
     if (saved && !resetPending) {
       try {
         const parsed = JSON.parse(saved);
-        if (parsed.terrainGrid && Object.keys(parsed.terrainGrid).length > 0) return migrateOldSave(parsed);
+        const loaded = loadSave(parsed);
+        if (loaded) return loaded;
+        // Old save without mapSeed — force reset
+        console.warn('Old save detected (no mapSeed) — starting new game');
       } catch (e) { console.error("Failed to load save", e); }
     }
     if (resetPending) sessionStorage.removeItem('industrializer_reset');
-    const terrainGrid: Record<string, TerrainHex> = {};
-    for (let q = -TERRAIN_RADIUS; q <= TERRAIN_RADIUS; q++) {
-      const r1 = Math.max(-TERRAIN_RADIUS, -q - TERRAIN_RADIUS);
-      const r2 = Math.min(TERRAIN_RADIUS, -q + TERRAIN_RADIUS);
-      for (let r = r1; r <= r2; r++) {
-        const rand = Math.random();
-        let terrain: TerrainType = 'plains';
-        if (rand < 0.1) terrain = 'water';
-        else if (rand < 0.3) terrain = 'forest';
-        else if (rand < 0.5) terrain = 'mountain';
-        terrainGrid[hexKey(q, r)] = { q, r, terrain };
-      }
-    }
-    const grid: Record<string, HexData> = {};
-    for (let q = -GRID_RADIUS; q <= GRID_RADIUS; q++) {
-      const r1 = Math.max(-GRID_RADIUS, -q - GRID_RADIUS);
-      const r2 = Math.min(GRID_RADIUS, -q + GRID_RADIUS);
-      for (let r = r1; r <= r2; r++) {
-        grid[hexKey(q, r)] = { q, r };
-      }
-    }
-    return {
-      flowSummary: emptyFlowSummary(),
-      grid,
-      terrainGrid,
-      infraEdges: {},
-      infraConstructionSites: [],
-      era: 1,
-      tick: 0,
-      totalExports: {},
-      exportRate: {},
-      tradeValue: 0,
-      marketPrices: {},
-    };
+    return createNewGame();
   });
 
   useEffect(() => {
@@ -293,6 +203,15 @@ const App: React.FC = () => {
   const [buildTab, setBuildTab] = useState<'Agri' | 'Mine' | 'Ind' | 'Civic'>('Agri');
   const [showResourceLedger, setShowResourceLedger] = useState(false);
   const [gamePaused, setGamePaused] = useState(false);
+
+  // Pan/zoom — all in refs to avoid React re-renders during interaction
+  const viewOffsetRef = useRef({ x: 0, y: 0 });
+  const zoomLevelRef = useRef(1.0);
+  const containerSizeRef = useRef({ w: 1200, h: 800 });
+  const isDraggingRef = useRef(false);
+  const dragStartRef = useRef({ x: 0, y: 0, vx: 0, vy: 0 });
+  const hasDraggedRef = useRef(false);
+  const mainSvgRef = useRef<SVGSVGElement | null>(null);
 
   // Flow dot animation — continuous spawner, fully outside React's render tree
   interface FlowRoute {
@@ -320,63 +239,42 @@ const App: React.FC = () => {
   const workerRef = useRef<Worker | null>(null);
   const terrainAssocRef = useRef<Record<string, TerrainType[]>>({});
 
-  // Dynamic viewBox to fill container while keeping grid visible
-  const [mapViewBox, setMapViewBox] = useState('-600 -600 1200 1200');
+  // Sync viewBox on both SVGs directly — no React re-render
+  const syncViewBox = useCallback(() => {
+    const { w, h } = containerSizeRef.current;
+    const zoom = zoomLevelRef.current;
+    const off = viewOffsetRef.current;
+    const vbW = w / zoom;
+    const vbH = h / zoom;
+    const vb = `${off.x - vbW / 2} ${off.y - vbH / 2} ${vbW} ${vbH}`;
+    if (mainSvgRef.current) mainSvgRef.current.setAttribute('viewBox', vb);
+    if (overlaySvgRef.current) overlaySvgRef.current.setAttribute('viewBox', vb);
+  }, []);
+
+  // Track container resize
   useEffect(() => {
     const container = mapContainerRef.current;
     if (!container) return;
-    const updateViewBox = () => {
+    const update = () => {
       const w = container.clientWidth;
       const h = container.clientHeight;
-      if (w === 0 || h === 0) return;
-      // Grid bounds: terrain radius 5, LARGE_HEX_SIZE 50, pointy-top
-      // Hex centers span ~-433..433 x, ~-375..375 y; corners add ~50px
-      const gridW = 980;
-      const gridH = 860;
-      const padding = 40;
-      const minW = gridW + padding * 2;
-      const minH = gridH + padding * 2;
-      const containerAspect = w / h;
-      const gridAspect = minW / minH;
-      let vbW: number, vbH: number;
-      if (containerAspect > gridAspect) {
-        vbH = minH;
-        vbW = minH * containerAspect;
-      } else {
-        vbW = minW;
-        vbH = minW / containerAspect;
+      if (w > 0 && h > 0) {
+        containerSizeRef.current = { w, h };
+        syncViewBox();
       }
-      const vb = `${-vbW / 2} ${-vbH / 2} ${vbW} ${vbH}`;
-      setMapViewBox(vb);
-      if (overlaySvgRef.current) overlaySvgRef.current.setAttribute('viewBox', vb);
     };
-    const ro = new ResizeObserver(updateViewBox);
+    const ro = new ResizeObserver(update);
     ro.observe(container);
-    updateViewBox();
+    update();
     return () => ro.disconnect();
-  }, []);
+  }, [syncViewBox]);
 
-  // PRE-CALCULATE TERRAIN ASSOCIATIONS
+  // 1:1 terrain associations — each hex maps to its own terrain
   const hexTerrainMap = useMemo(() => {
     const map = new Map<string, TerrainType[]>();
     for (const key of Object.keys(gameState.grid)) {
-      const hex = gameState.grid[key];
-      const { x: raw_x, y: raw_y } = pointyHexToPixel(hex.q, hex.r, HEX_SIZE);
-      const base_x = raw_x * Math.cos(BUILDING_ROT_ANGLE) - raw_y * Math.sin(BUILDING_ROT_ANGLE);
-      const base_y = raw_x * Math.sin(BUILDING_ROT_ANGLE) + raw_y * Math.cos(BUILDING_ROT_ANGLE);
-      const x = base_x + BUILDING_OFFSET_X;
-      const y = base_y + BUILDING_OFFSET_Y;
-      const tHexCoord = pixelToPointyHex(x, y, LARGE_HEX_SIZE);
-      const terrains = new Set<TerrainType>();
-      [tHexCoord, ...getNeighbors(tHexCoord.q, tHexCoord.r)].forEach(c => {
-        const terrainHex = gameState.terrainGrid[hexKey(c.q, c.r)];
-        if (terrainHex) {
-          const { x: tx, y: ty } = pointyHexToPixel(c.q, c.r, LARGE_HEX_SIZE);
-          const dist = Math.sqrt((x - tx) ** 2 + (y - ty) ** 2);
-          if (dist < LARGE_HEX_SIZE * 1.05) terrains.add(terrainHex.terrain);
-        }
-      });
-      map.set(key, Array.from(terrains));
+      const terrainHex = gameState.terrainGrid[key];
+      map.set(key, terrainHex ? [terrainHex.terrain] : []);
     }
     return map;
   }, [gameState.terrainGrid]);
@@ -418,7 +316,7 @@ const App: React.FC = () => {
 
     // Create overlay SVG imperatively — React never sees or touches this
     const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-    svg.setAttribute('viewBox', mapViewBox);
+    svg.setAttribute('viewBox', '0 0 1 1');
     svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
     svg.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none;';
     overlaySvgRef.current = svg;
@@ -801,7 +699,12 @@ const App: React.FC = () => {
   const demolishBuilding = () => {
     if (!selectedHex) return;
     const hex = gameState.grid[selectedHex];
-    setGameState(prev => ({ ...prev, grid: { ...prev.grid, [selectedHex]: { ...hex, buildingId: undefined, constructionSite: undefined, flowState: undefined } } }));
+    if (hex.constructionSite?.isUpgrade && hex.constructionSite.previousBuildingId) {
+      // Cancel upgrade: restore previous building
+      setGameState(prev => ({ ...prev, grid: { ...prev.grid, [selectedHex]: { ...hex, buildingId: hex.constructionSite!.previousBuildingId, constructionSite: undefined, flowState: undefined } } }));
+    } else {
+      setGameState(prev => ({ ...prev, grid: { ...prev.grid, [selectedHex]: { ...hex, buildingId: undefined, constructionSite: undefined, flowState: undefined } } }));
+    }
   };
 
   const getEdgeConstructionProgress = (site: InfraEdgeConstructionSite): number => {
@@ -882,35 +785,32 @@ const App: React.FC = () => {
     return { sameTypeEdges, labelHex };
   }, [gameState.grid]);
 
-  const terrainCorners = getHexCorners({ x: 0, y: 0 }, LARGE_HEX_SIZE, 30);
+  const terrainCorners = getHexCorners({ x: 0, y: 0 }, HEX_SIZE, 30);
   const terrainCornersStr = terrainCorners.map(p => `${p.x},${p.y}`).join(' ');
 
   const renderTerrainHex = (hex: TerrainHex) => {
-    const { x, y } = pointyHexToPixel(hex.q, hex.r, LARGE_HEX_SIZE);
+    const { x, y } = pointyHexToPixel(hex.q, hex.r, HEX_SIZE);
     const color = TERRAIN_COLORS[hex.terrain];
     return (
       <g key={`t-${hex.q},${hex.r}`} transform={`translate(${x}, ${y})`}>
         <polygon points={terrainCornersStr} fill={color} />
         <polygon points={terrainCornersStr} fill="none" stroke="#000000" strokeWidth={0.5} opacity={0.3} />
+        {hex.deposit && (
+          <circle cx={0} cy={0} r={HEX_SIZE * 0.18} fill={DEPOSIT_COLORS[hex.deposit]} stroke="#000" strokeWidth={0.5} opacity={0.8} />
+        )}
       </g>
     );
   };
 
-  const getHexPixelPos = (hex: HexData) => {
-    const { x: raw_x, y: raw_y } = pointyHexToPixel(hex.q, hex.r, HEX_SIZE);
-    const base_x = raw_x * Math.cos(BUILDING_ROT_ANGLE) - raw_y * Math.sin(BUILDING_ROT_ANGLE);
-    const base_y = raw_x * Math.sin(BUILDING_ROT_ANGLE) + raw_y * Math.cos(BUILDING_ROT_ANGLE);
-    return { x: base_x + BUILDING_OFFSET_X, y: base_y + BUILDING_OFFSET_Y };
+  const getHexPixelPos = (hex: { q: number; r: number }) => {
+    return pointyHexToPixel(hex.q, hex.r, HEX_SIZE);
   };
 
   const hexCorners = getHexCorners({ x: 0, y: 0 }, HEX_SIZE, 30);
   const hexCornersStr = hexCorners.map(p => `${p.x},${p.y}`).join(' ');
 
   const getHexPixel = (q: number, r: number) => {
-    const { x: raw_x, y: raw_y } = pointyHexToPixel(q, r, HEX_SIZE);
-    const bx = raw_x * Math.cos(BUILDING_ROT_ANGLE) - raw_y * Math.sin(BUILDING_ROT_ANGLE) + BUILDING_OFFSET_X;
-    const by = raw_x * Math.sin(BUILDING_ROT_ANGLE) + raw_y * Math.cos(BUILDING_ROT_ANGLE) + BUILDING_OFFSET_Y;
-    return { x: bx, y: by };
+    return pointyHexToPixel(q, r, HEX_SIZE);
   };
 
   const renderInfrastructureEdges = () => {
@@ -948,6 +848,40 @@ const App: React.FC = () => {
     }
     return elements;
   };
+
+  // Pan/zoom handlers — direct DOM, zero React re-renders
+  const handleWheel = useCallback((e: React.WheelEvent) => {
+    e.preventDefault();
+    const delta = e.deltaY > 0 ? 0.9 : 1.1;
+    zoomLevelRef.current = Math.max(0.5, Math.min(3.0, zoomLevelRef.current * delta));
+    syncViewBox();
+  }, [syncViewBox]);
+
+  const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    if (e.button !== 0) return;
+    isDraggingRef.current = true;
+    hasDraggedRef.current = false;
+    const off = viewOffsetRef.current;
+    dragStartRef.current = { x: e.clientX, y: e.clientY, vx: off.x, vy: off.y };
+  }, []);
+
+  const handleMouseMove = useCallback((e: React.MouseEvent) => {
+    if (!isDraggingRef.current) return;
+    const dx = e.clientX - dragStartRef.current.x;
+    const dy = e.clientY - dragStartRef.current.y;
+    if (Math.abs(dx) > 5 || Math.abs(dy) > 5) hasDraggedRef.current = true;
+    if (hasDraggedRef.current) {
+      viewOffsetRef.current = {
+        x: dragStartRef.current.vx - dx / zoomLevelRef.current,
+        y: dragStartRef.current.vy - dy / zoomLevelRef.current,
+      };
+      syncViewBox();
+    }
+  }, [syncViewBox]);
+
+  const handleMouseUp = useCallback(() => {
+    isDraggingRef.current = false;
+  }, []);
 
   const selectedHexData = selectedHex ? gameState.grid[selectedHex] : null;
   const selectedBuilding = selectedHexData?.buildingId ? BUILDINGS[selectedHexData.buildingId] : null;
@@ -1077,7 +1011,11 @@ const App: React.FC = () => {
                               {selectedBuilding ? selectedBuilding.name : selectedConstruction ? 'Construction Site' : 'Empty Terrain'}
                               {selectedHexData.prioritized && <Zap size={12} className="text-amber-400 fill-amber-400" />}
                            </div>
-                           <div className="text-xs text-zinc-500 mt-0.5 capitalize">{getAssociatedTerrains(selectedHexData.q, selectedHexData.r).join(', ')} • {selectedHex}</div>
+                           <div className="text-xs text-zinc-500 mt-0.5 capitalize">
+                              {getAssociatedTerrains(selectedHexData.q, selectedHexData.r).join(', ')}
+                              {gameState.terrainGrid[selectedHex]?.deposit && <span className="text-amber-400"> • {gameState.terrainGrid[selectedHex].deposit!.replace('_', ' ')} deposit</span>}
+                              <span> • {selectedHex}</span>
+                           </div>
                         </div>
                         <button onClick={() => setSelectedHex(null)} className="p-1 hover:bg-white/10 rounded text-zinc-500 hover:text-white"><X size={16}/></button>
                      </div>
@@ -1159,9 +1097,80 @@ const App: React.FC = () => {
                                        <span className="text-sky-400 font-bold text-sm">-{Math.round((selectedHexData.flowState.zoneInputReduction || 0) * 100)}%</span>
                                     </div>
                                  </div>
+                                 {(() => {
+                                    const scSize = selectedHexData.flowState!.superclusterSize || 0;
+                                    const scPct = scSize >= 42 ? 100 : scSize < 1 ? 0 : Math.round(Math.min(100, (scSize / 42) * 100));
+                                    const thresholdPct = Math.round((21 / 42) * 100);
+                                    return (
+                                       <div className="text-[10px] text-zinc-500">
+                                          <div className="flex justify-between mb-1">
+                                             <span>Zone size: {scSize}/42</span>
+                                             <span className={scSize >= 21 ? 'text-emerald-400' : 'text-zinc-500'}>{scSize >= 42 ? 'Max' : scSize >= 21 ? 'Active' : `${21 - scSize} to activate`}</span>
+                                          </div>
+                                          <div className="h-2 bg-black/40 rounded-full overflow-hidden relative">
+                                             <div className="absolute h-full w-px bg-zinc-500/60" style={{ left: `${thresholdPct}%` }} />
+                                             <div className={`h-full transition-all duration-500 ${scSize >= 21 ? 'bg-emerald-500' : 'bg-zinc-600'}`} style={{ width: `${scPct}%` }} />
+                                          </div>
+                                       </div>
+                                    );
+                                 })()}
                               </div>
                            )}
-                           
+
+                           {/* Contextual Hints */}
+                           {selectedHexData.flowState && (() => {
+                              const fs = selectedHexData.flowState!;
+                              const bid = selectedHexData.buildingId!;
+                              const building = BUILDINGS[bid];
+                              const hints: { type: 'warn' | 'info'; text: string }[] = [];
+
+                              // Demand-gating: outputs exist but realized is 0 despite inputs being ok
+                              const hasOutputs = Object.keys(building.outputs).length > 0;
+                              const allOutputsZero = hasOutputs && Object.values(fs.realized).every(v => v === 0);
+                              if (allOutputsZero && !selectedHexData.paused) {
+                                 hints.push({ type: 'warn', text: 'No demand for outputs. Build consumers or a trade depot nearby.' });
+                              }
+
+                              // Export efficiency warning for hub/export buildings
+                              if ((bid === 'trade_depot' || bid === 'station' || bid === 'export_port') && fs.exportEfficiency === 0) {
+                                 hints.push({ type: 'warn', text: 'No export route. Connect infrastructure (road/rail/canal) to the map edge or coast.' });
+                              }
+
+                              // Distance loss warning
+                              const totalDistLoss = fs.inputDiagnostics.reduce((s, d) => s + d.distanceLoss, 0);
+                              const totalRequired = fs.inputDiagnostics.reduce((s, d) => s + d.required, 0);
+                              if (totalRequired > 0 && totalDistLoss / totalRequired > 0.15) {
+                                 hints.push({ type: 'warn', text: 'High distance loss. Build roads closer to suppliers.' });
+                              }
+
+                              // Hub radius info
+                              if (HUB_RADIUS[bid]) {
+                                 hints.push({ type: 'info', text: `Free resource flow within ${HUB_RADIUS[bid]} hexes. Acts as wildcard for cluster bonuses.` });
+                              }
+
+                              // Export efficiency info for hub/export buildings
+                              if ((bid === 'trade_depot' || bid === 'station' || bid === 'export_port') && fs.exportEfficiency > 0) {
+                                 hints.push({ type: 'info', text: `Export efficiency: ${Math.round(fs.exportEfficiency * 100)}%. Upgrade roads to rail/canal for better rates.` });
+                              }
+
+                              // Power + transport coexistence hint
+                              if (bid === 'coal_power_plant' || bid === 'solar_array') {
+                                 hints.push({ type: 'info', text: 'Electricity needs power lines. Power and transport can share the same edge.' });
+                              }
+
+                              if (hints.length === 0) return null;
+                              return (
+                                 <div className="space-y-1.5">
+                                    {hints.map((h, i) => (
+                                       <div key={i} className={`flex items-start gap-2 text-[10px] p-2 rounded ${h.type === 'warn' ? 'bg-amber-500/10 text-amber-300' : 'bg-sky-500/10 text-sky-300'}`}>
+                                          {h.type === 'warn' ? <AlertTriangle size={12} className="shrink-0 mt-0.5" /> : <Info size={12} className="shrink-0 mt-0.5" />}
+                                          <span>{h.text}</span>
+                                       </div>
+                                    ))}
+                                 </div>
+                              );
+                           })()}
+
                            {/* Inputs/Outputs */}
                            <div className="space-y-2">
                               {selectedHexData.flowState?.inputDiagnostics.map(diag => (
@@ -1418,6 +1427,11 @@ const App: React.FC = () => {
                                     const hasCanal = countHexConnections(selectedHexData.q, selectedHexData.r, gameState.infraEdges, 'canal') > 0;
                                     const canBuild = !requires || requires.some(t => localTerrain.includes(t) || (t === 'water' && hasCanal));
                                     if (!canBuild) return null;
+                                    // Deposit check
+                                    if (b.requiresDeposit) {
+                                       const terrainHex = gameState.terrainGrid[selectedHex];
+                                       if (!terrainHex || terrainHex.deposit !== b.requiresDeposit) return null;
+                                    }
 
                                     return (
                                        <button 
@@ -1593,8 +1607,14 @@ const App: React.FC = () => {
       </div>
 
       {/* 3. Main Map */}
-      <div ref={mapContainerRef} className="absolute top-14 bottom-0 right-0 left-[380px] z-0">
-         <svg viewBox={mapViewBox} className="w-full h-full" preserveAspectRatio="xMidYMid meet">
+      <div ref={mapContainerRef} className="absolute top-14 bottom-0 right-0 left-[380px] z-0"
+         onWheel={handleWheel}
+         onMouseDown={handleMouseDown}
+         onMouseMove={handleMouseMove}
+         onMouseUp={handleMouseUp}
+         onMouseLeave={handleMouseUp}
+      >
+         <svg ref={mainSvgRef} viewBox="0 0 1 1" className="w-full h-full" preserveAspectRatio="xMidYMid meet">
             <g>
                {Object.values(gameState.terrainGrid).map(hex => renderTerrainHex(hex as any))}
                <g>
@@ -1605,6 +1625,7 @@ const App: React.FC = () => {
                        isSelected={selectedHex === hexKey(hex.q, hex.r)}
                        isHovered={hoveredHex === hexKey(hex.q, hex.r)}
                        onClick={() => {
+                          if (hasDraggedRef.current) return;
                           if (infraPlacementMode) { completeInfraPlacement(hexKey(hex.q, hex.r)); }
                           else { setSelectedHex(hexKey(hex.q, hex.r)); }
                        }}
@@ -1634,9 +1655,7 @@ const App: React.FC = () => {
                           const ohDist = hexDistance(h.q, h.r, oh.q, oh.r);
                           return ohDist <= oh.radius && (ohDist < dist || (ohDist === dist && oh.key < selectedHex!));
                        });
-                       const { x: raw_x, y: raw_y } = pointyHexToPixel(h.q, h.r, HEX_SIZE);
-                       const bx = raw_x * Math.cos(BUILDING_ROT_ANGLE) - raw_y * Math.sin(BUILDING_ROT_ANGLE) + BUILDING_OFFSET_X;
-                       const by = raw_x * Math.sin(BUILDING_ROT_ANGLE) + raw_y * Math.cos(BUILDING_ROT_ANGLE) + BUILDING_OFFSET_Y;
+                       const { x: bx, y: by } = pointyHexToPixel(h.q, h.r, HEX_SIZE);
                        return (
                           <g key={`hub-${h.q},${h.r}`} transform={`translate(${bx}, ${by})`} className="pointer-events-none">
                              <polygon points={hexCornersStr} fill={color} fillOpacity={claimed ? 0.02 : 0.06} stroke={color} strokeOpacity={claimed ? 0.1 : 0.3} strokeWidth={1} strokeDasharray={claimed ? "2,4" : "3,2"} />
@@ -1646,9 +1665,7 @@ const App: React.FC = () => {
                  })()}
                  {infraPlacementMode && hoveredHex && (() => {
                     const [hq, hr] = hoveredHex.split(',').map(Number);
-                    const { x: raw_x, y: raw_y } = pointyHexToPixel(hq, hr, HEX_SIZE);
-                    const bx = raw_x * Math.cos(BUILDING_ROT_ANGLE) - raw_y * Math.sin(BUILDING_ROT_ANGLE) + BUILDING_OFFSET_X;
-                    const by = raw_x * Math.sin(BUILDING_ROT_ANGLE) + raw_y * Math.cos(BUILDING_ROT_ANGLE) + BUILDING_OFFSET_Y;
+                    const { x: bx, y: by } = pointyHexToPixel(hq, hr, HEX_SIZE);
                     return (
                        <g key={`p-${hq},${hr}`} transform={`translate(${bx}, ${by})`} className="pointer-events-none">
                           <polygon points={hexCornersStr} fill="#ffffff" fillOpacity={0.2} stroke="#ffffff" strokeDasharray="4,2" />

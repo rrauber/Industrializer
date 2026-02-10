@@ -27,9 +27,12 @@ self.onmessage = (e: MessageEvent) => {
 
     const result = simulateTick(grid, terrainGrid, terrainAssociations, infraEdges, infraConstructionSites);
 
-    // Compute paths and per-segment visual costs for each aggregated flow pair
+    // Compute paths and per-segment visual costs for top flow pairs (by amount)
+    const sortedPairs = [...result.flowPairs].sort((a, b) => b.amount - a.amount);
+    const MAX_ROUTES = 80;
     const routeData: { fp: FlowPair; path: { q: number; r: number }[]; segCosts: number[] }[] = [];
-    for (const fp of result.flowPairs) {
+    for (const fp of sortedPairs) {
+      if (routeData.length >= MAX_ROUTES) break;
       const path = findPath(fp.sourceKey, fp.destKey, result.grid, result.infraEdges);
       if (path && path.length >= 2) {
         routeData.push({ fp, path, segCosts: computeSegCosts(path, result.infraEdges) });

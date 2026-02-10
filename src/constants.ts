@@ -1,4 +1,4 @@
-import { BuildingType, InfrastructureType, ResourceType, TerrainType } from './types';
+import { BuildingType, DepositType, InfrastructureType, ResourceType, TerrainType } from './types';
 
 export const BUILDINGS: Record<string, BuildingType> = {
   // --- TIER 0: PRIMITIVE (No complex inputs, easy start) ---
@@ -62,6 +62,7 @@ export const BUILDINGS: Record<string, BuildingType> = {
     outputs: { iron_ore: 0.3 },
     labor: 0,
     requiresTerrain: ['mountain'],
+    requiresDeposit: 'iron_ore',
     unlockEra: 2,
     upgradesTo: 'iron_mine',
     upgradeCost: { wood: 100, stone: 100, tools: 20 },
@@ -75,6 +76,7 @@ export const BUILDINGS: Record<string, BuildingType> = {
     outputs: { coal: 0.3 },
     labor: 0,
     requiresTerrain: ['mountain'],
+    requiresDeposit: 'coal',
     unlockEra: 2,
     upgradesTo: 'coal_mine',
     upgradeCost: { wood: 100, stone: 100, tools: 20 },
@@ -141,6 +143,7 @@ export const BUILDINGS: Record<string, BuildingType> = {
     outputs: { iron_ore: 2.5 },
     labor: 0,
     requiresTerrain: ['mountain'],
+    requiresDeposit: 'iron_ore',
     unlockEra: 3,
     upgradesTo: 'automated_iron_mine',
     upgradeCost: { steel: 200, concrete: 100, machinery: 50 },
@@ -154,6 +157,7 @@ export const BUILDINGS: Record<string, BuildingType> = {
     outputs: { coal: 2.5 },
     labor: 0,
     requiresTerrain: ['mountain'],
+    requiresDeposit: 'coal',
     unlockEra: 3,
     upgradesTo: 'automated_coal_mine',
     upgradeCost: { steel: 200, concrete: 100, machinery: 50 },
@@ -176,7 +180,7 @@ export const BUILDINGS: Record<string, BuildingType> = {
     description: 'Mass produces high-quality tools.',
     cost: { stone: 300, iron_ingot: 75 },
     inputs: { iron_ingot: 1, wood: 1, coal: 0.5, population: 0.5 },
-    outputs: { tools: 1.5 },
+    outputs: { tools: 1 },
     labor: 0,
     unlockEra: 3,
     upgradesTo: 'automated_toolworks',
@@ -190,7 +194,7 @@ export const BUILDINGS: Record<string, BuildingType> = {
     inputs: { stone: 5, coal: 1, population: 0.5 },
     outputs: { concrete: 1 },
     labor: 0,
-    unlockEra: 4,
+    unlockEra: 3,
     upgradesTo: 'electric_kiln',
     upgradeCost: { steel: 200, concrete: 100, machinery: 50 },
   },
@@ -202,7 +206,7 @@ export const BUILDINGS: Record<string, BuildingType> = {
     inputs: { iron_ingot: 3, coal: 3, tools: 0.5, population: 1.0 },
     outputs: { steel: 1 },
     labor: 0,
-    unlockEra: 4,
+    unlockEra: 3,
     upgradesTo: 'electric_arc_furnace',
     upgradeCost: { steel: 200, concrete: 100, machinery: 50 },
   },
@@ -216,7 +220,7 @@ export const BUILDINGS: Record<string, BuildingType> = {
     inputs: { steel: 2, tools: 1, iron_ingot: 1, population: 1.0 },
     outputs: { machinery: 0.5 },
     labor: 0,
-    unlockEra: 4,
+    unlockEra: 3,
     upgradesTo: 'precision_works',
     upgradeCost: { steel: 250, concrete: 100, machinery: 75 },
   },
@@ -228,7 +232,7 @@ export const BUILDINGS: Record<string, BuildingType> = {
     inputs: { iron_ingot: 2, wood: 2, tools: 0.5, machinery: 0.5, population: 2.0 },
     outputs: { goods: 1.5 },
     labor: 0,
-    unlockEra: 5,
+    unlockEra: 4,
     upgradesTo: 'assembly_line',
     upgradeCost: { steel: 300, concrete: 150, machinery: 100 },
   },
@@ -241,7 +245,7 @@ export const BUILDINGS: Record<string, BuildingType> = {
     outputs: {}, // produces no flow resources — generates exports instead
     labor: 0,
     requiresTerrain: ['plains', 'water'],
-    unlockEra: 5,
+    unlockEra: 4,
   },
   trade_depot: {
     id: 'trade_depot',
@@ -277,7 +281,18 @@ export const BUILDINGS: Record<string, BuildingType> = {
     inputs: { coal: 3, tools: 0.5, population: 1.0 },
     outputs: { electricity: 2 },
     labor: 0,
-    unlockEra: 5,
+    unlockEra: 4,
+  },
+  solar_array: {
+    id: 'solar_array',
+    name: 'Solar Array',
+    description: 'Fuel-free electricity from sunlight. Requires machinery upkeep.',
+    cost: { steel: 100, concrete: 50, machinery: 30 },
+    inputs: { machinery: 0.5, population: 0.2 },
+    outputs: { electricity: 2 },
+    labor: 0,
+    requiresTerrain: ['plains'],
+    unlockEra: 4,
   },
   electric_arc_furnace: {
     id: 'electric_arc_furnace',
@@ -287,7 +302,7 @@ export const BUILDINGS: Record<string, BuildingType> = {
     inputs: { iron_ore: 3, electricity: 2, tools: 0.5, population: 0.5 },
     outputs: { steel: 2 },
     labor: 0,
-    unlockEra: 5,
+    unlockEra: 4,
   },
   automated_toolworks: {
     id: 'automated_toolworks',
@@ -297,7 +312,7 @@ export const BUILDINGS: Record<string, BuildingType> = {
     inputs: { iron_ingot: 2, electricity: 1, population: 0.3 },
     outputs: { tools: 5 },
     labor: 0,
-    unlockEra: 5,
+    unlockEra: 4,
   },
   assembly_line: {
     id: 'assembly_line',
@@ -307,7 +322,7 @@ export const BUILDINGS: Record<string, BuildingType> = {
     inputs: { iron_ingot: 3, wood: 1, electricity: 2, machinery: 1, population: 1.0 },
     outputs: { goods: 4 },
     labor: 0,
-    unlockEra: 5,
+    unlockEra: 4,
   },
 
   electric_smelter: {
@@ -318,7 +333,7 @@ export const BUILDINGS: Record<string, BuildingType> = {
     inputs: { iron_ore: 3, electricity: 1, population: 0.3 },
     outputs: { iron_ingot: 2 },
     labor: 0,
-    unlockEra: 5,
+    unlockEra: 4,
   },
   electric_kiln: {
     id: 'electric_kiln',
@@ -328,7 +343,7 @@ export const BUILDINGS: Record<string, BuildingType> = {
     inputs: { stone: 5, electricity: 1, population: 0.3 },
     outputs: { concrete: 2.5 },
     labor: 0,
-    unlockEra: 5,
+    unlockEra: 4,
   },
   precision_works: {
     id: 'precision_works',
@@ -338,7 +353,7 @@ export const BUILDINGS: Record<string, BuildingType> = {
     inputs: { steel: 2, tools: 0.5, electricity: 2, population: 0.5 },
     outputs: { machinery: 1.5 },
     labor: 0,
-    unlockEra: 5,
+    unlockEra: 4,
   },
 
   industrial_farm: {
@@ -350,7 +365,7 @@ export const BUILDINGS: Record<string, BuildingType> = {
     outputs: { food: 3 },
     labor: 0,
     requiresTerrain: ['plains'],
-    unlockEra: 5,
+    unlockEra: 4,
   },
   automated_sawmill: {
     id: 'automated_sawmill',
@@ -361,7 +376,7 @@ export const BUILDINGS: Record<string, BuildingType> = {
     outputs: { wood: 4 },
     labor: 0,
     requiresTerrain: ['forest'],
-    unlockEra: 5,
+    unlockEra: 4,
   },
   automated_quarry: {
     id: 'automated_quarry',
@@ -372,7 +387,7 @@ export const BUILDINGS: Record<string, BuildingType> = {
     outputs: { stone: 4 },
     labor: 0,
     requiresTerrain: ['mountain'],
-    unlockEra: 5,
+    unlockEra: 4,
   },
   automated_iron_mine: {
     id: 'automated_iron_mine',
@@ -383,7 +398,8 @@ export const BUILDINGS: Record<string, BuildingType> = {
     outputs: { iron_ore: 5 },
     labor: 0,
     requiresTerrain: ['mountain'],
-    unlockEra: 5,
+    requiresDeposit: 'iron_ore',
+    unlockEra: 4,
   },
   automated_coal_mine: {
     id: 'automated_coal_mine',
@@ -394,7 +410,8 @@ export const BUILDINGS: Record<string, BuildingType> = {
     outputs: { coal: 5 },
     labor: 0,
     requiresTerrain: ['mountain'],
-    unlockEra: 5,
+    requiresDeposit: 'coal',
+    unlockEra: 4,
   },
 
   // --- CIVIC ---
@@ -407,7 +424,7 @@ export const BUILDINGS: Record<string, BuildingType> = {
     outputs: {},
     labor: 0,
     requiresTerrain: ['plains'],
-    unlockEra: 5,
+    unlockEra: 4,
   },
 
   // --- RESIDENTIAL (Population Production) ---
@@ -446,7 +463,7 @@ export const BUILDINGS: Record<string, BuildingType> = {
     outputs: { population: 6 },
     labor: 0,
     requiresTerrain: ['plains'],
-    unlockEra: 5,
+    unlockEra: 4,
   },
 };
 
@@ -470,7 +487,7 @@ export const INFRASTRUCTURE_COSTS: Record<InfrastructureType, Partial<Record<Res
   hv_line: { steel: 30, concrete: 10, machinery: 5 },
 };
 
-export const INFRA_UNLOCK_ERA: Record<InfrastructureType, number> = { road: 1, rail: 2, canal: 2, power_line: 5, hv_line: 5 };
+export const INFRA_UNLOCK_ERA: Record<InfrastructureType, number> = { road: 1, rail: 2, canal: 2, power_line: 4, hv_line: 4 };
 
 export const HUB_RADIUS: Record<string, number> = {
   trade_depot: 2,
@@ -478,11 +495,19 @@ export const HUB_RADIUS: Record<string, number> = {
   export_port: 4,
 };
 
+export const MAP_RADIUS = 27;
+export const HEX_SIZE = 30;
+
 export const TERRAIN_COLORS: Record<TerrainType, string> = {
   plains: '#2d3a28',   // Dark grass
   forest: '#1e2b18',   // Very dark green
   mountain: '#3a3c3e', // Dark grey
   water: '#1a2634',    // Dark deep blue
+};
+
+export const DEPOSIT_COLORS: Record<DepositType, string> = {
+  iron_ore: '#8b4513',  // Reddish-brown
+  coal: '#2a2a2a',      // Dark grey
 };
 
 export const ZONE_OUTPUT_BONUS = 0.15;
@@ -493,7 +518,7 @@ export const ZONE_TYPES: Record<string, { name: string; description: string; col
     name: 'Agricultural',
     description: 'Food & forestry',
     color: '#39ff14', // Neon Green
-    buildings: ['forager', 'farm', 'industrial_farm', 'wood_camp', 'lumber_mill', 'automated_sawmill', 'settlement', 'town', 'city'],
+    buildings: ['forager', 'farm', 'industrial_farm', 'wood_camp', 'lumber_mill', 'automated_sawmill'],
   },
   mining: {
     name: 'Mining',
@@ -505,7 +530,13 @@ export const ZONE_TYPES: Record<string, { name: string; description: string; col
     name: 'Industry',
     description: 'Processing & manufacturing',
     color: '#00ffff', // Neon Cyan
-    buildings: ['workshop', 'bloomery', 'smelter', 'electric_smelter', 'tool_factory', 'automated_toolworks', 'concrete_factory', 'electric_kiln', 'steel_mill', 'electric_arc_furnace', 'coal_power_plant', 'machine_works', 'precision_works', 'manufactory', 'assembly_line', 'export_port'],
+    buildings: ['workshop', 'bloomery', 'smelter', 'electric_smelter', 'tool_factory', 'automated_toolworks', 'concrete_factory', 'electric_kiln', 'steel_mill', 'electric_arc_furnace', 'coal_power_plant', 'solar_array', 'machine_works', 'precision_works', 'manufactory', 'assembly_line', 'export_port'],
+  },
+  residential: {
+    name: 'Residential',
+    description: 'Housing & population',
+    color: '#ff69b4', // Neon Pink
+    buildings: ['settlement', 'town', 'city'],
   },
 };
 
@@ -516,11 +547,10 @@ export const ERA_MILESTONES: Record<number, {
   label: string;
 }> = {
   2: { type: 'cumulative', requirements: { food: 250, wood: 250 }, label: 'Agriculture' },
-  3: { type: 'cumulative', requirements: { stone: 400, iron_ore: 200, coal: 200 }, label: 'Mining' },
-  4: { type: 'cumulative', requirements: { iron_ingot: 1500, tools: 2000 }, label: 'Metal Processing' },
-  5: { type: 'cumulative', requirements: { concrete: 1500, steel: 1500 }, label: 'Industrialization' },
-  6: { type: 'rate', tradeValueTarget: 15, label: 'Global Market' },
-  7: { type: 'rate', tradeValueTarget: 40, label: 'Megaregion' },
+  3: { type: 'cumulative', requirements: { iron_ingot: 500 }, label: 'Industry' },
+  4: { type: 'cumulative', requirements: { steel: 1500 }, label: 'Industrialization' },
+  5: { type: 'rate', tradeValueTarget: 15, label: 'Global Market' },
+  6: { type: 'rate', tradeValueTarget: 40, label: 'Megaregion' },
 };
 
 export const MARKET_CONFIG: Record<string, { base_value: number; saturation: number }> = {

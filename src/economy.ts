@@ -8,6 +8,44 @@ type TerrainAssociations = Record<string, TerrainType[]>;
 // Precomputed distance map: source hex key -> (dest hex key -> path cost)
 type DistanceMap = Map<string, Map<string, number>>;
 
+// Binary min-heap for Dijkstra
+interface HeapNode { key: string; q: number; r: number; cost: number }
+class MinHeap {
+  private data: HeapNode[] = [];
+  get length() { return this.data.length; }
+  push(node: HeapNode) {
+    this.data.push(node);
+    this._bubbleUp(this.data.length - 1);
+  }
+  pop(): HeapNode {
+    const top = this.data[0];
+    const last = this.data.pop()!;
+    if (this.data.length > 0) { this.data[0] = last; this._sinkDown(0); }
+    return top;
+  }
+  private _bubbleUp(i: number) {
+    const d = this.data;
+    while (i > 0) {
+      const p = (i - 1) >> 1;
+      if (d[p].cost <= d[i].cost) break;
+      [d[p], d[i]] = [d[i], d[p]];
+      i = p;
+    }
+  }
+  private _sinkDown(i: number) {
+    const d = this.data, n = d.length;
+    while (true) {
+      let min = i;
+      const l = 2 * i + 1, r = 2 * i + 2;
+      if (l < n && d[l].cost < d[min].cost) min = l;
+      if (r < n && d[r].cost < d[min].cost) min = r;
+      if (min === i) break;
+      [d[min], d[i]] = [d[i], d[min]];
+      i = min;
+    }
+  }
+}
+
 function precomputeDistances(
   sourceKeys: string[],
   grid: Record<string, HexData>,
@@ -38,17 +76,10 @@ function precomputeDistances(
     if (!startHex) continue;
     const distances = new Map<string, number>();
     distances.set(startKey, 0);
-    const queue: { key: string, q: number, r: number, cost: number }[] = [
-      { key: startKey, q: startHex.q, r: startHex.r, cost: 0 }
-    ];
+    const queue = new MinHeap();
+    queue.push({ key: startKey, q: startHex.q, r: startHex.r, cost: 0 });
     while (queue.length > 0) {
-      let minIdx = 0;
-      for (let i = 1; i < queue.length; i++) {
-        if (queue[i].cost < queue[minIdx].cost) minIdx = i;
-      }
-      const current = queue[minIdx];
-      queue[minIdx] = queue[queue.length - 1];
-      queue.pop();
+      const current = queue.pop();
       if (current.cost > (distances.get(current.key) ?? Infinity)) continue;
       // Normal hex neighbors (inlined to avoid allocation)
       for (const d of HEX_DIRECTIONS) {
@@ -125,6 +156,7 @@ interface ProducerState {
   clusterSize: number;
   zoneOutputBonus: number;
   zoneInputReduction: number;
+  superclusterSize: number;
 }
 
 interface ConsumerState {
@@ -152,7 +184,7 @@ function addToMap(map: ResourceMap, key: string, amount: number) {
   map[key] = (map[key] || 0) + amount;
 }
 
-const CONVERGENCE_ITERATIONS = 5;
+const CONVERGENCE_ITERATIONS = 3;
 const BASE_POPULATION = 0.1;
 const CONSTRUCTION_RESERVE = 0.1; // reserve 10% of production for construction sites
 const MIN_PRODUCTION_FLOOR = 0.1; // buildings always produce at least 10% to prevent deadlocks
@@ -240,6 +272,9 @@ function computeClusters(grid: Record<string, HexData>): Map<string, { size: num
           }
         }
         const bonus = score >= 5 ? 1.0 : score >= 3 ? 0.5 : score >= 2 ? 0.25 : score >= 1 ? 0.1 : 0;
+        // n+1 buildings contribute to the cluster but don't receive the bonus
+        const bHex = grid[buildingKey];
+        if (bHex?.buildingId && compatible.has(bHex.buildingId)) continue;
         // Hub buildings can be in multiple clusters; keep the best bonus
         const prev = result.get(buildingKey);
         if (!prev || bonus > prev.bonus) {
@@ -258,8 +293,8 @@ function computeClusters(grid: Record<string, HexData>): Map<string, { size: num
   return result;
 }
 
-function computeSuperclusters(grid: Record<string, HexData>): Map<string, { bonus: number; uniCount: number }> {
-  const result = new Map<string, { bonus: number; uniCount: number }>();
+function computeSuperclusters(grid: Record<string, HexData>): Map<string, { bonus: number; uniCount: number; size: number }> {
+  const result = new Map<string, { bonus: number; uniCount: number; size: number }>();
   const HUB_BUILDINGS = new Set(Object.keys(HUB_RADIUS));
 
   // Build reverse lookup: buildingId → zone type
@@ -272,7 +307,6 @@ function computeSuperclusters(grid: Record<string, HexData>): Map<string, { bonu
   const zoneTypes = Object.keys(ZONE_TYPES);
   for (const zt of zoneTypes) {
     const visited = new Set<string>();
-    const clusters: string[][] = [];
 
     for (const [key, hex] of Object.entries(grid)) {
       if (visited.has(key) || !hex.buildingId || hex.constructionSite || hex.paused) continue;
@@ -299,7 +333,7 @@ function computeSuperclusters(grid: Record<string, HexData>): Map<string, { bonu
         }
       }
 
-      // Must have ≥8 non-wildcard buildings of ≥2 distinct types to qualify
+      // Count non-wildcard buildings and distinct types
       const typesInCluster = new Set<string>();
       let nonWildcardCount = 0;
       for (const k of cluster) {
@@ -310,25 +344,22 @@ function computeSuperclusters(grid: Record<string, HexData>): Map<string, { bonu
           typesInCluster.add(h.buildingId!);
         }
       }
-      if (nonWildcardCount < 8 || typesInCluster.size < 2) continue;
 
-      clusters.push(cluster);
-    }
-
-    for (const cluster of clusters) {
-
-      // Count universities in this supercluster
+      // Count universities
       let uniCount = 0;
       for (const k of cluster) {
         if (grid[k].buildingId === 'university') uniCount++;
       }
 
-      // All buildings in a qualifying supercluster get full bonus (1.0)
+      // Bonus requires ≥21 non-wildcard of ≥2 types; scales linearly to 42
+      const qualifies = nonWildcardCount >= 21 && typesInCluster.size >= 2;
+      const bonus = qualifies ? Math.min(1.0, (nonWildcardCount - 21) / (42 - 21)) : 0;
+
+      // Record size for all buildings (even sub-threshold) for UI progress
       for (const buildingKey of cluster) {
-        // Keep best bonus across zone types (wildcards can be in multiple)
         const prev = result.get(buildingKey);
-        if (!prev || 1.0 > prev.bonus) {
-          result.set(buildingKey, { bonus: 1.0, uniCount });
+        if (!prev || nonWildcardCount > prev.size) {
+          result.set(buildingKey, { bonus: prev ? Math.max(prev.bonus, bonus) : bonus, uniCount, size: nonWildcardCount });
         }
       }
     }
@@ -617,18 +648,11 @@ export function findPath(
   const distances = new Map<string, number>();
   const parent = new Map<string, string>();
   distances.set(sourceKey, 0);
-  const queue: { key: string; q: number; r: number; cost: number }[] = [
-    { key: sourceKey, q: sourceHex.q, r: sourceHex.r, cost: 0 }
-  ];
+  const queue = new MinHeap();
+  queue.push({ key: sourceKey, q: sourceHex.q, r: sourceHex.r, cost: 0 });
 
   while (queue.length > 0) {
-    let minIdx = 0;
-    for (let i = 1; i < queue.length; i++) {
-      if (queue[i].cost < queue[minIdx].cost) minIdx = i;
-    }
-    const current = queue[minIdx];
-    queue[minIdx] = queue[queue.length - 1];
-    queue.pop();
+    const current = queue.pop();
 
     if (current.key === destKey) break; // Early termination
 
@@ -749,7 +773,7 @@ export function simulateTick(
   const producers: ProducerState[] = [{
     hex: { q: 0, r: 0 }, key: '__base__', buildingId: '__base__',
     potential: { population: BASE_POPULATION }, realized: {}, remaining: { population: BASE_POPULATION },
-    clusterBonus: 0, clusterSize: 0, zoneOutputBonus: 0, zoneInputReduction: 0
+    clusterBonus: 0, clusterSize: 0, zoneOutputBonus: 0, zoneInputReduction: 0, superclusterSize: 0
   }];
 
   const processors: ConsumerState[] = [];
@@ -767,13 +791,14 @@ export function simulateTick(
     }
     const sc = superclusters.get(key);
     const scMultiplier = sc?.bonus ?? 0;
-    const scUniCount = sc?.uniCount ?? 0;
+    const scUniCount = Math.min(sc?.uniCount ?? 0, 4);
+    const superclusterSize = sc?.size ?? 0;
     const zoneOutputBonus = scMultiplier > 0 ? (ZONE_OUTPUT_BONUS + scUniCount * 0.10) * scMultiplier : 0;
-    const zoneInputReduction = scMultiplier > 0 ? (ZONE_INPUT_REDUCTION + scUniCount * 0.05) * scMultiplier : 0;
+    const zoneInputReduction = scMultiplier > 0 ? Math.min((ZONE_INPUT_REDUCTION + scUniCount * 0.05) * scMultiplier, 0.25) : 0;
     if (zoneOutputBonus > 0) {
       for (const [res, amount] of Object.entries(building.outputs)) potential[res] = (potential[res] || 0) + (amount as number) * zoneOutputBonus;
     }
-    producers.push({ hex, key, buildingId, potential, realized: {}, remaining: { ...potential }, clusterBonus, clusterSize, zoneOutputBonus, zoneInputReduction });
+    producers.push({ hex, key, buildingId, potential, realized: {}, remaining: { ...potential }, clusterBonus, clusterSize, zoneOutputBonus, zoneInputReduction, superclusterSize });
 
     const demand: Record<string, number> = {};
     for (const [res, amount] of Object.entries(building.inputs)) demand[res] = (amount as number) * (1 - zoneInputReduction);
@@ -1039,6 +1064,7 @@ export function simulateTick(
       efficiency: producer.buildingId === 'export_port' ? 1 : inputEfficiency, // port efficiency handled by consumed goods
       clusterBonus: producer.clusterBonus, clusterSize: producer.clusterSize,
       zoneOutputBonus: producer.zoneOutputBonus, zoneInputReduction: producer.zoneInputReduction,
+      superclusterSize: producer.superclusterSize,
       exports: buildingExports, exportEfficiency: buildingExportEff
     };
   }

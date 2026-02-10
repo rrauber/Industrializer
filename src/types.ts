@@ -8,6 +8,8 @@ export interface ResourceMap {
 
 export type TerrainType = 'plains' | 'forest' | 'mountain' | 'water';
 
+export type DepositType = 'iron_ore' | 'coal';
+
 export type InfrastructureType = 'road' | 'rail' | 'canal' | 'power_line' | 'hv_line';
 
 export interface BuildingType {
@@ -19,6 +21,7 @@ export interface BuildingType {
   outputs: Partial<Record<ResourceType, number>>;
   labor: number;
   requiresTerrain?: TerrainType[];
+  requiresDeposit?: DepositType;
   unlockEra: number;
   upgradesTo?: string;
   upgradeCost?: Partial<Record<ResourceType, number>>;
@@ -43,6 +46,7 @@ export interface BuildingFlowState {
   clusterSize: number; // how many buildings in this cluster
   zoneOutputBonus: number; // bonus zone output multiplier
   zoneInputReduction: number; // bonus zone input reduction
+  superclusterSize: number; // non-wildcard members in best zone component
   exports: ResourceMap; // resources exported by this building this tick
   exportEfficiency: number; // 0–1 infra-to-map-edge multiplier
 }
@@ -95,6 +99,7 @@ export interface TerrainHex {
   q: number;
   r: number;
   terrain: TerrainType;
+  deposit?: DepositType;
 }
 
 export interface FlowPair {
@@ -117,4 +122,5 @@ export interface GameState {
   exportRate: ResourceMap; // per-tick export rate
   tradeValue: number; // current trade value per tick
   marketPrices: ResourceMap; // current market prices per resource
+  mapSeed: number;
 }
