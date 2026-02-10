@@ -145,7 +145,6 @@ interface HexCompProps {
 
 const HexFill = React.memo(({ hex, isSelected, isHovered, onClick, onMouseEnter, onMouseLeave }: HexCompProps) => {
   const { x, y } = getHexPixelPos(hex);
-  const key = hexKey(hex.q, hex.r);
   const hasConstruction = !!hex.constructionSite;
   
   let fill = 'transparent';
@@ -805,15 +804,6 @@ const App: React.FC = () => {
     setGameState(prev => ({ ...prev, grid: { ...prev.grid, [selectedHex]: { ...hex, buildingId: undefined, constructionSite: undefined, flowState: undefined } } }));
   };
 
-  const getConstructionProgress = (site: ConstructionSite): number => {
-    let totalNeeded = 0, totalDelivered = 0;
-    for (const [res, amount] of Object.entries(site.totalCost)) {
-      totalNeeded += amount;
-      totalDelivered += Math.min(site.delivered[res] || 0, amount);
-    }
-    return totalNeeded > 0 ? totalDelivered / totalNeeded : 1;
-  };
-
   const getEdgeConstructionProgress = (site: InfraEdgeConstructionSite): number => {
     let totalNeeded = 0, totalDelivered = 0;
     for (const [res, amount] of Object.entries(site.totalCost)) {
@@ -915,70 +905,6 @@ const App: React.FC = () => {
 
   const hexCorners = getHexCorners({ x: 0, y: 0 }, HEX_SIZE, 30);
   const hexCornersStr = hexCorners.map(p => `${p.x},${p.y}`).join(' ');
-
-  const renderHexFill = (hex: HexData) => {
-    const { x, y } = getHexPixelPos(hex);
-    const key = hexKey(hex.q, hex.r);
-    const isSelected = selectedHex === key;
-    const isHovered = hoveredHex === key;
-    const hasConstruction = !!hex.constructionSite;
-    const buildingColor = hex.buildingId ? (BUILDING_COLORS[hex.buildingId] || '#666') : null;
-    const isInCluster = hex.buildingId && !hex.constructionSite && clusterInfo.labelHex.has(key) && clusterInfo.labelHex.get(key) !== key;
-    const isLabelHex = hex.buildingId && !hex.constructionSite && clusterInfo.labelHex.get(key) === key;
-    const inCluster = isInCluster || isLabelHex;
-    let fill = 'transparent';
-    if (buildingColor && !hasConstruction) fill = inCluster ? buildingColor + '20' : 'transparent';
-    else if (hasConstruction) {
-      const targetColor = BUILDING_COLORS[hex.constructionSite!.targetBuildingId] || '#a08000';
-      fill = targetColor + '18';
-    }
-    if (isSelected) fill = '#ffffff30';
-    else if (isHovered) fill = '#ffffff15';
-    return (
-      <g key={key} transform={`translate(${x}, ${y})`} onMouseEnter={() => setHoveredHex(key)} onMouseLeave={() => setHoveredHex(null)} onClick={() => {
-        if (infraPlacementMode) { completeInfraPlacement(key); }
-        else { setSelectedHex(key); }
-      }} className="cursor-pointer"><polygon points={hexCornersStr} fill={fill} stroke="none" /></g>
-    );
-  };
-
-  const renderHexOverlay = (hex: HexData) => {
-    const { x, y } = getHexPixelPos(hex);
-    const key = hexKey(hex.q, hex.r);
-    const isSelected = selectedHex === key;
-    const hasConstruction = !!hex.constructionSite;
-    const progress = hasConstruction ? getConstructionProgress(hex.constructionSite!) : 0;
-    const buildingColor = hex.buildingId ? (BUILDING_COLORS[hex.buildingId] || '#666') : null;
-    const efficiency = hex.flowState?.efficiency ?? 0;
-    const effColor = efficiency >= 0.9 ? '#4caf50' : efficiency >= 0.5 ? '#ffa726' : '#ef5350';
-    const isInCluster = hex.buildingId && !hex.constructionSite && clusterInfo.labelHex.has(key) && clusterInfo.labelHex.get(key) !== key;
-    const isLabelHex = hex.buildingId && !hex.constructionSite && clusterInfo.labelHex.get(key) === key;
-    const inCluster = isInCluster || isLabelHex;
-    const hasBuilding = !!hex.buildingId && !hasConstruction;
-    const IconComponent = hex.buildingId ? BuildingIcons[hex.buildingId] : null;
-    return (
-      <g key={`o-${key}`} transform={`translate(${x}, ${y})`} className="pointer-events-none">
-        {isSelected && <polygon points={hexCornersStr} fill="none" stroke="#fbbf24" strokeWidth={3} opacity={0.8} />}
-        {hexCorners.map((corner, i) => {
-          const next = hexCorners[(i + 1) % 6];
-          const isInternal = clusterInfo.sameTypeEdges.has(`${key}|${i}`);
-          if (isInternal) return null;
-          if (hasBuilding) return <line key={i} x1={corner.x} y1={corner.y} x2={next.x} y2={next.y} stroke={buildingColor || '#fff'} strokeWidth={1.5} opacity={0.6} />;
-          return null;
-        })}
-        {hasConstruction && <polygon points={hexCornersStr} fill="none" stroke="#d4a017" strokeWidth={1} strokeDasharray="3,2" />}
-        {hasBuilding && IconComponent && isLabelHex && <g opacity={inCluster ? 1 : 0.9}><IconComponent color={buildingColor!} size={HEX_SIZE * 1.1} /></g>}
-        {hasBuilding && efficiency < 0.99 && <circle cx={HEX_SIZE * 0.6} cy={-HEX_SIZE * 0.6} r={3} fill={effColor} stroke="#000" strokeWidth={0.5} />}
-        {hex.paused && hasBuilding && (
-          <g transform={`translate(${-HEX_SIZE * 0.55}, ${-HEX_SIZE * 0.55})`}>
-            <rect x={-2.5} y={-3.5} width={2} height={7} fill="#ef4444" rx={0.5} />
-            <rect x={0.5} y={-3.5} width={2} height={7} fill="#ef4444" rx={0.5} />
-          </g>
-        )}
-        {hasConstruction && <><rect x={-HEX_SIZE * 0.5} y={HEX_SIZE * 0.3} width={HEX_SIZE} height={3} fill="#1a1a1a" rx={1.5} /><rect x={-HEX_SIZE * 0.5} y={HEX_SIZE * 0.3} width={HEX_SIZE * progress} height={3} fill="#eab308" rx={1.5} /></>}
-      </g>
-    );
-  };
 
   const getHexPixel = (q: number, r: number) => {
     const { x: raw_x, y: raw_y } = pointyHexToPixel(q, r, HEX_SIZE);

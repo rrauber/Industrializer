@@ -1,4 +1,4 @@
-import { HexData, TerrainHex, TerrainType, ResourceMap, FlowSummary, BuildingFlowState, InputDiagnostic, InfrastructureEdge, InfraEdgeConstructionSite, FlowPair } from './types';
+import { HexData, TerrainHex, TerrainType, ResourceMap, FlowSummary, InputDiagnostic, InfrastructureEdge, InfraEdgeConstructionSite, FlowPair } from './types';
 import { BUILDINGS, ZONE_TYPES, ZONE_OUTPUT_BONUS, ZONE_INPUT_REDUCTION, INFRA_STEP_COSTS, HUB_RADIUS, MARKET_CONFIG } from './constants';
 import { hexKey, getEdgeKey, getNeighbors, getHexesInRadius, countHexConnections, setEdgeType, HEX_DIRECTIONS } from './hexUtils';
 
@@ -513,12 +513,12 @@ export function getExportPath(
 function allocatePass(
   resource: string,
   producers: ProducerState[],
-  consumers: (ConsumerState | { hex: HexData; key: string; demand: Record<string, number>; received: Record<string, number>; distanceLoss: Record<string, number>; prioritized: boolean }),
+  consumers: (ConsumerState | { hex: HexData; key: string; demand: Record<string, number>; received: Record<string, number>; distanceLoss: Record<string, number>; prioritized: boolean })[],
   distMap: DistanceMap,
   portDistMap?: DistanceMap,
   flowPairs?: FlowPair[]
 ) {
-  const consumerList = Array.isArray(consumers) ? consumers : [consumers];
+  const consumerList = consumers;
   const pairs: AllocPair[] = [];
   for (const p of producers) {
     const remaining = p.remaining[resource] || 0;
@@ -1019,13 +1019,9 @@ export function simulateTick(
 
     // Consumption for Exporter Ports
     if (exporter) {
-      let exportEff = 0;
       for (const res of Object.keys(building.inputs)) {
         const received = exporter.received[res] || 0;
         const distLoss = exporter.distanceLoss[res] || 0;
-        const required = exporter.demand[res] || 0;
-        const satisfaction = required > 0 ? Math.min(1, received / required) : 1;
-        if (res === 'goods') exportEff = satisfaction; // simplistic
         consumed[res] = received;
         addToMap(summary.consumed, res, received);
         addToMap(summary.exportConsumed, res, received);
