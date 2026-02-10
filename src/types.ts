@@ -1,6 +1,6 @@
 export type ResourceType = 'food' | 'wood' | 'stone' | 'iron_ore' | 'coal'
   | 'iron_ingot' | 'tools' | 'concrete' | 'steel'
-  | 'machinery' | 'goods' | 'population';
+  | 'machinery' | 'goods' | 'electricity' | 'population';
 
 export interface ResourceMap {
   [key: string]: number;
@@ -8,16 +8,7 @@ export interface ResourceMap {
 
 export type TerrainType = 'plains' | 'forest' | 'mountain' | 'water';
 
-export type InfrastructureType = 'road' | 'rail' | 'canal';
-
-export type ZoneType = 'mines' | 'farms' | 'settlements' | 't1_goods' | 't2_goods';
-
-export interface BonusZone {
-  id: string;
-  type: ZoneType;
-  centerQ: number;
-  centerR: number;
-}
+export type InfrastructureType = 'road' | 'rail' | 'canal' | 'power_line' | 'hv_line';
 
 export interface BuildingType {
   id: string;
@@ -65,7 +56,8 @@ export interface ConstructionSite {
 }
 
 export interface InfrastructureEdge {
-  type: InfrastructureType;
+  transport?: 'road' | 'rail' | 'canal';
+  power?: 'power_line' | 'hv_line';
 }
 
 export interface InfraEdgeConstructionSite {
@@ -81,8 +73,10 @@ export interface InfraEdgeConstructionSite {
 
 export interface FlowSummary {
   potential: ResourceMap;
+  potentialDemand: ResourceMap;
   realized: ResourceMap;
   consumed: ResourceMap;
+  exportConsumed: ResourceMap;
   lostToDistance: ResourceMap;
   lostToShortage: ResourceMap;
 }
@@ -92,6 +86,7 @@ export interface HexData {
   r: number;
   buildingId?: string;
   prioritized?: boolean;
+  paused?: boolean;
   constructionSite?: ConstructionSite;
   flowState?: BuildingFlowState;
 }
@@ -102,6 +97,14 @@ export interface TerrainHex {
   terrain: TerrainType;
 }
 
+export interface FlowPair {
+  sourceKey: string;
+  destKey: string;
+  resource: string;
+  amount: number;
+  pathCost: number;
+}
+
 export interface GameState {
   flowSummary: FlowSummary;
   grid: Record<string, HexData>;
@@ -110,8 +113,8 @@ export interface GameState {
   infraConstructionSites: InfraEdgeConstructionSite[];
   era: number;
   tick: number;
-  showNetwork?: boolean;
   totalExports: ResourceMap; // cumulative exports
   exportRate: ResourceMap; // per-tick export rate
-  zones: BonusZone[];
+  tradeValue: number; // current trade value per tick
+  marketPrices: ResourceMap; // current market prices per resource
 }

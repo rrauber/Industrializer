@@ -1,4 +1,4 @@
-import { BuildingType, InfrastructureType, ResourceType, ResourceMap, TerrainType, ZoneType } from './types';
+import { BuildingType, InfrastructureType, ResourceType, TerrainType } from './types';
 
 export const BUILDINGS: Record<string, BuildingType> = {
   // --- TIER 0: PRIMITIVE (No complex inputs, easy start) ---
@@ -62,7 +62,7 @@ export const BUILDINGS: Record<string, BuildingType> = {
     outputs: { iron_ore: 0.3 },
     labor: 0,
     requiresTerrain: ['mountain'],
-    unlockEra: 1,
+    unlockEra: 2,
     upgradesTo: 'iron_mine',
     upgradeCost: { wood: 100, stone: 100, tools: 20 },
   },
@@ -75,7 +75,7 @@ export const BUILDINGS: Record<string, BuildingType> = {
     outputs: { coal: 0.3 },
     labor: 0,
     requiresTerrain: ['mountain'],
-    unlockEra: 1,
+    unlockEra: 2,
     upgradesTo: 'coal_mine',
     upgradeCost: { wood: 100, stone: 100, tools: 20 },
   },
@@ -87,7 +87,7 @@ export const BUILDINGS: Record<string, BuildingType> = {
     inputs: { iron_ore: 1, wood: 2, population: 0.2 },
     outputs: { iron_ingot: 0.25 },
     labor: 0,
-    unlockEra: 1,
+    unlockEra: 2,
     upgradesTo: 'smelter',
     upgradeCost: { stone: 100, wood: 50, iron_ingot: 10 },
   },
@@ -102,7 +102,9 @@ export const BUILDINGS: Record<string, BuildingType> = {
     outputs: { food: 1.5 },
     labor: 0,
     requiresTerrain: ['plains'],
-    unlockEra: 1,
+    unlockEra: 2,
+    upgradesTo: 'industrial_farm',
+    upgradeCost: { steel: 150, concrete: 75, machinery: 30 },
   },
   lumber_mill: {
     id: 'lumber_mill',
@@ -113,7 +115,9 @@ export const BUILDINGS: Record<string, BuildingType> = {
     outputs: { wood: 2 },
     labor: 0,
     requiresTerrain: ['forest'],
-    unlockEra: 2,
+    unlockEra: 3,
+    upgradesTo: 'automated_sawmill',
+    upgradeCost: { steel: 150, concrete: 50, machinery: 30 },
   },
   quarry: {
     id: 'quarry',
@@ -124,7 +128,9 @@ export const BUILDINGS: Record<string, BuildingType> = {
     outputs: { stone: 2 },
     labor: 0,
     requiresTerrain: ['mountain'],
-    unlockEra: 2,
+    unlockEra: 3,
+    upgradesTo: 'automated_quarry',
+    upgradeCost: { steel: 150, concrete: 75, machinery: 30 },
   },
   iron_mine: {
     id: 'iron_mine',
@@ -135,7 +141,9 @@ export const BUILDINGS: Record<string, BuildingType> = {
     outputs: { iron_ore: 2.5 },
     labor: 0,
     requiresTerrain: ['mountain'],
-    unlockEra: 2,
+    unlockEra: 3,
+    upgradesTo: 'automated_iron_mine',
+    upgradeCost: { steel: 200, concrete: 100, machinery: 50 },
   },
   coal_mine: {
     id: 'coal_mine',
@@ -146,7 +154,9 @@ export const BUILDINGS: Record<string, BuildingType> = {
     outputs: { coal: 2.5 },
     labor: 0,
     requiresTerrain: ['mountain'],
-    unlockEra: 2,
+    unlockEra: 3,
+    upgradesTo: 'automated_coal_mine',
+    upgradeCost: { steel: 200, concrete: 100, machinery: 50 },
   },
   smelter: {
     id: 'smelter',
@@ -156,7 +166,9 @@ export const BUILDINGS: Record<string, BuildingType> = {
     inputs: { iron_ore: 2, coal: 1, population: 0.5 },
     outputs: { iron_ingot: 0.75 },
     labor: 0,
-    unlockEra: 2,
+    unlockEra: 3,
+    upgradesTo: 'electric_smelter',
+    upgradeCost: { steel: 150, concrete: 75, machinery: 30 },
   },
   tool_factory: {
     id: 'tool_factory',
@@ -166,7 +178,9 @@ export const BUILDINGS: Record<string, BuildingType> = {
     inputs: { iron_ingot: 1, wood: 1, coal: 0.5, population: 0.5 },
     outputs: { tools: 1.5 },
     labor: 0,
-    unlockEra: 2,
+    unlockEra: 3,
+    upgradesTo: 'automated_toolworks',
+    upgradeCost: { steel: 150, concrete: 50, machinery: 30 },
   },
   concrete_factory: {
     id: 'concrete_factory',
@@ -176,7 +190,9 @@ export const BUILDINGS: Record<string, BuildingType> = {
     inputs: { stone: 5, coal: 1, population: 0.5 },
     outputs: { concrete: 1 },
     labor: 0,
-    unlockEra: 3,
+    unlockEra: 4,
+    upgradesTo: 'electric_kiln',
+    upgradeCost: { steel: 200, concrete: 100, machinery: 50 },
   },
   steel_mill: {
     id: 'steel_mill',
@@ -186,7 +202,9 @@ export const BUILDINGS: Record<string, BuildingType> = {
     inputs: { iron_ingot: 3, coal: 3, tools: 0.5, population: 1.0 },
     outputs: { steel: 1 },
     labor: 0,
-    unlockEra: 3,
+    unlockEra: 4,
+    upgradesTo: 'electric_arc_furnace',
+    upgradeCost: { steel: 200, concrete: 100, machinery: 50 },
   },
 
   // --- TIER 2: ADVANCED (Era 3-4, deeper chains) ---
@@ -198,7 +216,9 @@ export const BUILDINGS: Record<string, BuildingType> = {
     inputs: { steel: 2, tools: 1, iron_ingot: 1, population: 1.0 },
     outputs: { machinery: 0.5 },
     labor: 0,
-    unlockEra: 3,
+    unlockEra: 4,
+    upgradesTo: 'precision_works',
+    upgradeCost: { steel: 250, concrete: 100, machinery: 75 },
   },
   manufactory: {
     id: 'manufactory',
@@ -208,29 +228,186 @@ export const BUILDINGS: Record<string, BuildingType> = {
     inputs: { iron_ingot: 2, wood: 2, tools: 0.5, machinery: 0.5, population: 2.0 },
     outputs: { goods: 1.5 },
     labor: 0,
-    unlockEra: 4,
+    unlockEra: 5,
+    upgradesTo: 'assembly_line',
+    upgradeCost: { steel: 300, concrete: 150, machinery: 100 },
   },
   export_port: {
     id: 'export_port',
-    name: 'Export Port',
-    description: 'Ships goods abroad. Needs infrastructure path to map edge.',
+    name: 'Port',
+    description: 'Ships goods abroad. Free flow within 4 hexes. Wildcard for clusters. Water ports provide free maritime transit.',
     cost: { concrete: 150, steel: 75 },
     inputs: { goods: 5, tools: 0.2, population: 1.0 },
     outputs: {}, // produces no flow resources — generates exports instead
     labor: 0,
     requiresTerrain: ['plains', 'water'],
-    unlockEra: 4,
+    unlockEra: 5,
   },
   trade_depot: {
     id: 'trade_depot',
     name: 'Trade Depot',
-    description: 'Absorbs surplus production and exports it. Needs infrastructure path to map edge.',
+    description: 'Absorbs surplus production and exports it. Free flow within 2 hexes. Wildcard for cluster bonuses.',
     cost: { wood: 15 },
     inputs: { population: 0.2 },
     outputs: {}, // generates exports, not flow resources
     labor: 0,
     requiresTerrain: ['plains', 'forest'],
     unlockEra: 1,
+    upgradesTo: 'station',
+    upgradeCost: { stone: 150, iron_ingot: 50 },
+  },
+  station: {
+    id: 'station',
+    name: 'Station',
+    description: 'Rail logistics hub. Free flow within 3 hexes. Absorbs surplus for export. Wildcard for clusters.',
+    cost: { stone: 150, iron_ingot: 50 },
+    inputs: { population: 0.5, tools: 0.1 },
+    outputs: {},
+    labor: 0,
+    requiresTerrain: ['plains'],
+    unlockEra: 3,
+  },
+
+  // --- TIER 3: ELECTRIC (Era 5-6, electricity-powered) ---
+  coal_power_plant: {
+    id: 'coal_power_plant',
+    name: 'Coal Power Plant',
+    description: 'Burns coal to generate electricity.',
+    cost: { steel: 200, concrete: 100, machinery: 30 },
+    inputs: { coal: 3, tools: 0.5, population: 1.0 },
+    outputs: { electricity: 2 },
+    labor: 0,
+    unlockEra: 5,
+  },
+  electric_arc_furnace: {
+    id: 'electric_arc_furnace',
+    name: 'Electric Arc Furnace',
+    description: 'Electric steelmaking. Skips coal, more efficient.',
+    cost: { steel: 200, concrete: 100, machinery: 50 },
+    inputs: { iron_ore: 3, electricity: 2, tools: 0.5, population: 0.5 },
+    outputs: { steel: 2 },
+    labor: 0,
+    unlockEra: 5,
+  },
+  automated_toolworks: {
+    id: 'automated_toolworks',
+    name: 'Automated Toolworks',
+    description: 'Electric tool production. No wood or coal needed.',
+    cost: { steel: 150, concrete: 50, machinery: 30 },
+    inputs: { iron_ingot: 2, electricity: 1, population: 0.3 },
+    outputs: { tools: 5 },
+    labor: 0,
+    unlockEra: 5,
+  },
+  assembly_line: {
+    id: 'assembly_line',
+    name: 'Assembly Line',
+    description: 'Electric mass production. Huge goods output.',
+    cost: { steel: 300, concrete: 150, machinery: 100 },
+    inputs: { iron_ingot: 3, wood: 1, electricity: 2, machinery: 1, population: 1.0 },
+    outputs: { goods: 4 },
+    labor: 0,
+    unlockEra: 5,
+  },
+
+  electric_smelter: {
+    id: 'electric_smelter',
+    name: 'Electric Smelter',
+    description: 'Electric iron smelting. No coal, much more efficient.',
+    cost: { steel: 150, concrete: 75, machinery: 30 },
+    inputs: { iron_ore: 3, electricity: 1, population: 0.3 },
+    outputs: { iron_ingot: 2 },
+    labor: 0,
+    unlockEra: 5,
+  },
+  electric_kiln: {
+    id: 'electric_kiln',
+    name: 'Electric Kiln',
+    description: 'Electric concrete production. No coal, higher output.',
+    cost: { steel: 200, concrete: 100, machinery: 50 },
+    inputs: { stone: 5, electricity: 1, population: 0.3 },
+    outputs: { concrete: 2.5 },
+    labor: 0,
+    unlockEra: 5,
+  },
+  precision_works: {
+    id: 'precision_works',
+    name: 'Precision Works',
+    description: 'CNC-driven precision machinery. Triple output.',
+    cost: { steel: 250, concrete: 100, machinery: 75 },
+    inputs: { steel: 2, tools: 0.5, electricity: 2, population: 0.5 },
+    outputs: { machinery: 1.5 },
+    labor: 0,
+    unlockEra: 5,
+  },
+
+  industrial_farm: {
+    id: 'industrial_farm',
+    name: 'Industrial Farm',
+    description: 'Electrically-powered agriculture. Massive food output, minimal labor.',
+    cost: { steel: 150, concrete: 75, machinery: 30 },
+    inputs: { electricity: 1, tools: 0.1, population: 0.05 },
+    outputs: { food: 3 },
+    labor: 0,
+    requiresTerrain: ['plains'],
+    unlockEra: 5,
+  },
+  automated_sawmill: {
+    id: 'automated_sawmill',
+    name: 'Automated Sawmill',
+    description: 'Electric wood processing. Double output, fraction of the labor.',
+    cost: { steel: 150, concrete: 50, machinery: 30 },
+    inputs: { electricity: 1, tools: 0.1, population: 0.1 },
+    outputs: { wood: 4 },
+    labor: 0,
+    requiresTerrain: ['forest'],
+    unlockEra: 5,
+  },
+  automated_quarry: {
+    id: 'automated_quarry',
+    name: 'Automated Quarry',
+    description: 'Electric stone extraction. Double output, less labor.',
+    cost: { steel: 150, concrete: 75, machinery: 30 },
+    inputs: { electricity: 1, tools: 0.2, population: 0.2 },
+    outputs: { stone: 4 },
+    labor: 0,
+    requiresTerrain: ['mountain'],
+    unlockEra: 5,
+  },
+  automated_iron_mine: {
+    id: 'automated_iron_mine',
+    name: 'Automated Iron Mine',
+    description: 'Electric deep mining. Double iron output, less labor.',
+    cost: { steel: 200, concrete: 100, machinery: 50 },
+    inputs: { electricity: 2, tools: 0.3, population: 0.3 },
+    outputs: { iron_ore: 5 },
+    labor: 0,
+    requiresTerrain: ['mountain'],
+    unlockEra: 5,
+  },
+  automated_coal_mine: {
+    id: 'automated_coal_mine',
+    name: 'Automated Coal Mine',
+    description: 'Electric deep mining. Double coal output, less labor.',
+    cost: { steel: 200, concrete: 100, machinery: 50 },
+    inputs: { electricity: 2, tools: 0.3, population: 0.3 },
+    outputs: { coal: 5 },
+    labor: 0,
+    requiresTerrain: ['mountain'],
+    unlockEra: 5,
+  },
+
+  // --- CIVIC ---
+  university: {
+    id: 'university',
+    name: 'University',
+    description: 'Amplifies bonus zone effects. +10% output, +5% input reduction per university in zone.',
+    cost: { concrete: 200, steel: 100, machinery: 50 },
+    inputs: { population: 3, tools: 0.5, goods: 0.5 },
+    outputs: {},
+    labor: 0,
+    requiresTerrain: ['plains'],
+    unlockEra: 5,
   },
 
   // --- RESIDENTIAL (Population Production) ---
@@ -265,71 +442,98 @@ export const BUILDINGS: Record<string, BuildingType> = {
     name: 'City',
     description: 'A major metropolis. Requires massive food and goods.',
     cost: { stone: 300, iron_ingot: 75, concrete: 75 },
-    inputs: { food: 15, tools: 0.5, coal: 0.5 },
+    inputs: { food: 10, tools: 0.5, electricity: 0.5 },
     outputs: { population: 6 },
     labor: 0,
     requiresTerrain: ['plains'],
-    unlockEra: 3,
+    unlockEra: 5,
   },
 };
 
-export const MAX_INFRA_CONNECTIONS = 3;
+export const MAX_INFRA_CONNECTIONS = 4;
+
+export const INFRA_SPACING: Record<InfrastructureType, number> = {
+  road: 2,
+  rail: 4,
+  canal: 4,
+  power_line: 2,
+  hv_line: 4,
+};
+
+export const INFRA_STEP_COSTS: Record<InfrastructureType, number> = { road: 0.5, rail: 0.1, canal: 1.0, power_line: 1.0, hv_line: 1.0 };
 
 export const INFRASTRUCTURE_COSTS: Record<InfrastructureType, Partial<Record<ResourceType, number>>> = {
   road: {},        // free (instant, as before)
   rail: { iron_ingot: 10, stone: 20 },
-  canal: { stone: 40, tools: 10 },
+  canal: { stone: 40, tools: 10, concrete: 20 },
+  power_line: { iron_ingot: 10, tools: 5 },
+  hv_line: { steel: 30, concrete: 10, machinery: 5 },
+};
+
+export const INFRA_UNLOCK_ERA: Record<InfrastructureType, number> = { road: 1, rail: 2, canal: 2, power_line: 5, hv_line: 5 };
+
+export const HUB_RADIUS: Record<string, number> = {
+  trade_depot: 2,
+  station: 3,
+  export_port: 4,
 };
 
 export const TERRAIN_COLORS: Record<TerrainType, string> = {
-  plains: '#8a7f6a',
-  forest: '#5a6b4a',
-  mountain: '#6b6d70',
-  water: '#3d5a6e',
+  plains: '#2d3a28',   // Dark grass
+  forest: '#1e2b18',   // Very dark green
+  mountain: '#3a3c3e', // Dark grey
+  water: '#1a2634',    // Dark deep blue
 };
 
-export const ZONE_RADIUS = 3;
-export const MAX_ZONES_PER_TYPE = 2;
 export const ZONE_OUTPUT_BONUS = 0.15;
 export const ZONE_INPUT_REDUCTION = 0.10;
 
-export const ZONE_TYPES: Record<ZoneType, { name: string; description: string; color: string; buildings: string[] }> = {
-  mines: {
-    name: 'Mining District',
+export const ZONE_TYPES: Record<string, { name: string; description: string; color: string; buildings: string[] }> = {
+  agricultural: {
+    name: 'Agricultural',
+    description: 'Food & forestry',
+    color: '#39ff14', // Neon Green
+    buildings: ['forager', 'farm', 'industrial_farm', 'wood_camp', 'lumber_mill', 'automated_sawmill', 'settlement', 'town', 'city'],
+  },
+  mining: {
+    name: 'Mining',
     description: 'Extraction & quarrying',
-    color: '#ff6b1a',
-    buildings: ['surface_mine', 'surface_coal', 'iron_mine', 'coal_mine', 'quarry', 'stone_camp'],
+    color: '#ff4500', // Neon Orange-Red
+    buildings: ['surface_mine', 'surface_coal', 'iron_mine', 'coal_mine', 'quarry', 'stone_camp', 'automated_quarry', 'automated_iron_mine', 'automated_coal_mine'],
   },
-  farms: {
-    name: 'Agricultural Zone',
-    description: 'Food production',
-    color: '#39ff14',
-    buildings: ['forager', 'farm'],
-  },
-  settlements: {
-    name: 'Residential Zone',
-    description: 'Population growth',
-    color: '#ffe414',
-    buildings: ['settlement', 'town', 'city'],
-  },
-  t1_goods: {
-    name: 'Light Industry',
-    description: 'Processing & tools',
-    color: '#00e5ff',
-    buildings: ['workshop', 'bloomery', 'smelter', 'tool_factory', 'lumber_mill'],
-  },
-  t2_goods: {
-    name: 'Heavy Industry',
-    description: 'Advanced manufacturing',
-    color: '#e040fb',
-    buildings: ['concrete_factory', 'steel_mill', 'machine_works', 'manufactory', 'export_port'],
+  industry: {
+    name: 'Industry',
+    description: 'Processing & manufacturing',
+    color: '#00ffff', // Neon Cyan
+    buildings: ['workshop', 'bloomery', 'smelter', 'electric_smelter', 'tool_factory', 'automated_toolworks', 'concrete_factory', 'electric_kiln', 'steel_mill', 'electric_arc_furnace', 'coal_power_plant', 'machine_works', 'precision_works', 'manufactory', 'assembly_line', 'export_port'],
   },
 };
 
-export const ERA_MILESTONES: Record<number, { requirements: Partial<Record<ResourceType, number>>; label: string }> = {
-  2: { requirements: { food: 250, wood: 250 }, label: 'Agricultural' },
-  3: { requirements: { stone: 750 }, label: 'Mining' },
-  4: { requirements: { iron_ingot: 1500 }, label: 'Metal Processing' },
-  5: { requirements: { tools: 2000, concrete: 1500, steel: 1500 }, label: 'Early Industrial' },
-  6: { requirements: { goods: 3000, machinery: 1500 }, label: 'Late Industrial' },
+export const ERA_MILESTONES: Record<number, {
+  type: 'cumulative' | 'rate';
+  requirements?: Partial<Record<ResourceType, number>>;
+  tradeValueTarget?: number;
+  label: string;
+}> = {
+  2: { type: 'cumulative', requirements: { food: 250, wood: 250 }, label: 'Agriculture' },
+  3: { type: 'cumulative', requirements: { stone: 400, iron_ore: 200, coal: 200 }, label: 'Mining' },
+  4: { type: 'cumulative', requirements: { iron_ingot: 1500, tools: 2000 }, label: 'Metal Processing' },
+  5: { type: 'cumulative', requirements: { concrete: 1500, steel: 1500 }, label: 'Industrialization' },
+  6: { type: 'rate', tradeValueTarget: 15, label: 'Global Market' },
+  7: { type: 'rate', tradeValueTarget: 40, label: 'Megaregion' },
+};
+
+export const MARKET_CONFIG: Record<string, { base_value: number; saturation: number }> = {
+  food:        { base_value: 1,   saturation: 500 },
+  wood:        { base_value: 1,   saturation: 500 },
+  stone:       { base_value: 1,   saturation: 500 },
+  iron_ore:    { base_value: 1.5, saturation: 400 },
+  coal:        { base_value: 1.5, saturation: 400 },
+  iron_ingot:  { base_value: 3,   saturation: 1000 },
+  tools:       { base_value: 4,   saturation: 1500 },
+  concrete:    { base_value: 3,   saturation: 1000 },
+  steel:       { base_value: 5,   saturation: 1500 },
+  machinery:   { base_value: 8,   saturation: 2000 },
+  goods:       { base_value: 10,  saturation: 2000 },
+  electricity: { base_value: 2,   saturation: 800 },
 };

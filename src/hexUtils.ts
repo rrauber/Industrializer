@@ -1,3 +1,22 @@
+import { InfrastructureType, InfrastructureEdge } from './types';
+
+export function isPowerInfra(type: InfrastructureType): boolean {
+  return type === 'power_line' || type === 'hv_line';
+}
+
+export function edgeHasType(edge: InfrastructureEdge | undefined, type: InfrastructureType): boolean {
+  if (!edge) return false;
+  if (isPowerInfra(type)) return edge.power === type;
+  return edge.transport === type;
+}
+
+export function setEdgeType(edge: InfrastructureEdge | undefined, type: InfrastructureType): InfrastructureEdge {
+  const result: InfrastructureEdge = edge ? { ...edge } : {};
+  if (isPowerInfra(type)) result.power = type as 'power_line' | 'hv_line';
+  else result.transport = type as 'road' | 'rail' | 'canal';
+  return result;
+}
+
 export interface Point {
   x: number;
   y: number;
@@ -71,12 +90,16 @@ export function getHexCorners(center: Point, size: number, startAngleDeg: number
   return corners;
 }
 
+export const HEX_DIRECTIONS: readonly { dq: number, dr: number }[] = [
+  { dq: 1, dr: 0 }, { dq: 1, dr: -1 }, { dq: 0, dr: -1 },
+  { dq: -1, dr: 0 }, { dq: -1, dr: 1 }, { dq: 0, dr: 1 }
+];
+
 export function getNeighbors(q: number, r: number): { q: number, r: number }[] {
-  const directions = [
-    { q: 1, r: 0 }, { q: 1, r: -1 }, { q: 0, r: -1 },
-    { q: -1, r: 0 }, { q: -1, r: 1 }, { q: 0, r: 1 }
+  return [
+    { q: q + 1, r },     { q: q + 1, r: r - 1 }, { q, r: r - 1 },
+    { q: q - 1, r },     { q: q - 1, r: r + 1 }, { q, r: r + 1 }
   ];
-  return directions.map(d => ({ q: q + d.q, r: r + d.r }));
 }
 
 export function hexKey(q: number, r: number): string {
@@ -84,9 +107,9 @@ export function hexKey(q: number, r: number): string {
 }
 
 export function getEdgeKey(q1: number, r1: number, q2: number, r2: number): string {
-  const k1 = hexKey(q1, r1);
-  const k2 = hexKey(q2, r2);
-  return [k1, k2].sort().join('|');
+  // Canonical ordering without array/sort/join allocation
+  if (q1 < q2 || (q1 === q2 && r1 < r2)) return `${q1},${r1}|${q2},${r2}`;
+  return `${q2},${r2}|${q1},${r1}`;
 }
 
 export function parseHexKey(key: string): { q: number, r: number } {
@@ -100,20 +123,43 @@ export function hexDistance(q1: number, r1: number, q2: number, r2: number): num
   return Math.max(Math.abs(dq), Math.abs(dr), Math.abs(dq + dr));
 }
 
-export function getHexInfraEdges(q: number, r: number, infraEdges: Record<string, { type: string }>): { edgeKey: string; neighborQ: number; neighborR: number; type: string }[] {
-  const result: { edgeKey: string; neighborQ: number; neighborR: number; type: string }[] = [];
+export function getHexInfraEdges(q: number, r: number, infraEdges: Record<string, InfrastructureEdge>, filterType?: InfrastructureType): { edgeKey: string; neighborQ: number; neighborR: number; type: InfrastructureType }[] {
+  const result: { edgeKey: string; neighborQ: number; neighborR: number; type: InfrastructureType }[] = [];
   for (const n of getNeighbors(q, r)) {
     const ek = getEdgeKey(q, r, n.q, n.r);
     const edge = infraEdges[ek];
-    if (edge) {
-      result.push({ edgeKey: ek, neighborQ: n.q, neighborR: n.r, type: edge.type });
+    if (!edge) continue;
+    if (filterType) {
+      if (edgeHasType(edge, filterType)) {
+        result.push({ edgeKey: ek, neighborQ: n.q, neighborR: n.r, type: filterType });
+      }
+    } else {
+      // No filter: return an entry for each type present on the edge
+      if (edge.transport) result.push({ edgeKey: ek, neighborQ: n.q, neighborR: n.r, type: edge.transport });
+      if (edge.power) result.push({ edgeKey: ek, neighborQ: n.q, neighborR: n.r, type: edge.power });
     }
   }
   return result;
 }
 
-export function countHexConnections(q: number, r: number, infraEdges: Record<string, { type: string }>): number {
-  return getHexInfraEdges(q, r, infraEdges).length;
+export function countHexConnections(q: number, r: number, infraEdges: Record<string, InfrastructureEdge>, type?: InfrastructureType): number {
+  if (type) {
+    let count = 0;
+    for (const d of HEX_DIRECTIONS) {
+      const nq = q + d.dq, nr = r + d.dr;
+      const ek = getEdgeKey(q, r, nq, nr);
+      const edge = infraEdges[ek];
+      if (edge && edgeHasType(edge, type)) count++;
+    }
+    return count;
+  }
+  // No type filter: count unique physical edges (not per-type entries)
+  let count = 0;
+  for (const d of HEX_DIRECTIONS) {
+    const ek = getEdgeKey(q, r, q + d.dq, r + d.dr);
+    if (infraEdges[ek]) count++;
+  }
+  return count;
 }
 
 export function parseEdgeKey(edgeKey: string): [{ q: number; r: number }, { q: number; r: number }] {
@@ -133,4 +179,43 @@ export function getHexesInRadius(cq: number, cr: number, radius: number): { q: n
     }
   }
   return hexes;
+}
+
+// Check if there is another intersection (degree > 2) of the same type within `range` steps.
+// This function traverses the graph defined by infraEdges.
+export function hasIntersectionInRadius(
+  startQ: number,
+  startR: number,
+  type: InfrastructureType,
+  infraEdges: Record<string, InfrastructureEdge>,
+  range: number
+): boolean {
+  const startKey = hexKey(startQ, startR);
+  // Queue: [key, dist]
+  const queue: { q: number; r: number; dist: number }[] = [{ q: startQ, r: startR, dist: 0 }];
+  const visited = new Set<string>();
+  visited.add(startKey);
+
+  while (queue.length > 0) {
+    const { q, r, dist } = queue.shift()!;
+
+    if (dist > 0) {
+      // Check if this node is an intersection
+      const conns = countHexConnections(q, r, infraEdges, type);
+      if (conns > 2) return true;
+    }
+
+    if (dist >= range) continue;
+
+    const neighbors = getHexInfraEdges(q, r, infraEdges, type);
+    for (const n of neighbors) {
+      const nKey = hexKey(n.neighborQ, n.neighborR);
+      if (!visited.has(nKey)) {
+        visited.add(nKey);
+        queue.push({ q: n.neighborQ, r: n.neighborR, dist: dist + 1 });
+      }
+    }
+  }
+
+  return false;
 }

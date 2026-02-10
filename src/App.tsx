@@ -1,9 +1,10 @@
-import React, { useState, useEffect, useMemo } from 'react';
-import { HexData, TerrainHex, GameState, ResourceType, TerrainType, InfrastructureType, FlowSummary, ConstructionSite, InfraEdgeConstructionSite, ZoneType, BonusZone } from './types';
-import { hexKey, getEdgeKey, parseEdgeKey, pointyHexToPixel, pixelToPointyHex, getHexCorners, getNeighbors, countHexConnections, getHexesInRadius } from './hexUtils';
-import { BUILDINGS, INFRASTRUCTURE_COSTS, MAX_INFRA_CONNECTIONS, TERRAIN_COLORS, ZONE_TYPES, ZONE_RADIUS, MAX_ZONES_PER_TYPE, ERA_MILESTONES } from './constants';
-import { simulateTick } from './economy';
-import { Zap, Info } from 'lucide-react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { HexData, TerrainHex, GameState, ResourceType, TerrainType, InfrastructureType, InfrastructureEdge, FlowSummary, ConstructionSite, InfraEdgeConstructionSite } from './types';
+import { hexKey, getEdgeKey, parseEdgeKey, pointyHexToPixel, pixelToPointyHex, getHexCorners, getNeighbors, countHexConnections, getHexesInRadius, hasIntersectionInRadius, edgeHasType, setEdgeType, isPowerInfra, hexDistance } from './hexUtils';
+import { BUILDINGS, INFRASTRUCTURE_COSTS, MAX_INFRA_CONNECTIONS, TERRAIN_COLORS, ERA_MILESTONES, INFRA_SPACING, INFRA_UNLOCK_ERA, HUB_RADIUS } from './constants';
+import { computeMarketPrices, computeTradeValue } from './economy';
+import { Zap, Box, Activity, Hammer, X, TrendingUp, Settings, Pause, Play } from 'lucide-react';
+import { BuildingIcons, ResourceIcons } from './icons';
 
 const LARGE_HEX_SIZE = 50;
 const HEX_SIZE = LARGE_HEX_SIZE / 2;
@@ -15,131 +16,33 @@ const BUILDING_OFFSET_Y = -HEX_SIZE;
 const BUILDING_ROT_ANGLE = 0;
 
 function emptyFlowSummary(): FlowSummary {
-  return { potential: {}, realized: {}, consumed: {}, lostToDistance: {}, lostToShortage: {} };
+  return { potential: {}, potentialDemand: {}, realized: {}, consumed: {}, exportConsumed: {}, lostToDistance: {}, lostToShortage: {} };
 }
 
 // All resource types to display
-const ALL_RESOURCES: ResourceType[] = ['food', 'wood', 'stone', 'iron_ore', 'coal', 'iron_ingot', 'tools', 'concrete', 'steel', 'machinery', 'goods', 'population'];
+const ALL_RESOURCES: ResourceType[] = ['food', 'wood', 'stone', 'iron_ore', 'coal', 'iron_ingot', 'tools', 'concrete', 'steel', 'machinery', 'goods', 'electricity', 'population'];
 
 const RESOURCE_COLORS: Record<string, string> = {
-  food: '#7cb342', wood: '#33691e', stone: '#8d6e63', iron_ore: '#a1887f',
-  coal: '#616161', iron_ingot: '#ef6c00', tools: '#1976d2', concrete: '#78909c',
-  steel: '#455a64', machinery: '#5c6bc0', goods: '#8e24aa', population: '#ff7043',
+  food: '#84cc16', wood: '#4ade80', stone: '#a8a29e', iron_ore: '#f87171',
+  coal: '#52525b', iron_ingot: '#fb923c', tools: '#38bdf8', concrete: '#94a3b8',
+  steel: '#475569', machinery: '#818cf8', goods: '#e879f9', electricity: '#facc15',
+  population: '#fbbf24',
 };
 
+// LIGHTER COLORS for buildings
 const BUILDING_COLORS: Record<string, string> = {
-  // Agricultural — warm green
-  forager: '#8aba6a', farm: '#8aba6a',
-  wood_camp: '#8aba6a', lumber_mill: '#8aba6a',
-  // Mining — warm tan/amber
-  stone_camp: '#c4a46a', quarry: '#c4a46a',
-  surface_mine: '#c4a46a', surface_coal: '#c4a46a',
-  iron_mine: '#c4a46a', coal_mine: '#c4a46a',
-  // Industrial — cool slate blue
-  bloomery: '#7a9ab5', smelter: '#7a9ab5',
-  workshop: '#7a9ab5', tool_factory: '#7a9ab5',
-  concrete_factory: '#7a9ab5', steel_mill: '#7a9ab5',
-  machine_works: '#7a9ab5', manufactory: '#7a9ab5',
-  // Trade — warm gold
-  export_port: '#d4aa4f', trade_depot: '#d4aa4f',
-  // Residential — warm peach
-  settlement: '#d4937a', town: '#d4937a', city: '#d4937a',
+  forager: '#aaddaa', farm: '#aaddaa', wood_camp: '#aaddaa', lumber_mill: '#aaddaa', industrial_farm: '#aaddaa', automated_sawmill: '#aaddaa',
+  stone_camp: '#eecfa1', quarry: '#eecfa1', surface_mine: '#eecfa1', surface_coal: '#eecfa1', iron_mine: '#eecfa1', coal_mine: '#eecfa1', automated_quarry: '#eecfa1', automated_iron_mine: '#eecfa1', automated_coal_mine: '#eecfa1',
+  bloomery: '#aabccf', smelter: '#aabccf', workshop: '#aabccf', tool_factory: '#aabccf', concrete_factory: '#aabccf', steel_mill: '#aabccf', machine_works: '#aabccf', manufactory: '#aabccf',
+  coal_power_plant: '#aabccf', electric_arc_furnace: '#aabccf', automated_toolworks: '#aabccf', assembly_line: '#aabccf',
+  electric_smelter: '#aabccf', electric_kiln: '#aabccf', precision_works: '#aabccf',
+  export_port: '#ffe082', trade_depot: '#ffe082', station: '#ffe082',
+  settlement: '#ffccbc', town: '#ffccbc', city: '#ffccbc', university: '#ffccbc',
 };
-
-const BUILDING_LABELS: Record<string, string> = {
-  forager: 'FRG', wood_camp: 'WOD', stone_camp: 'STN', workshop: 'WRK',
-  surface_mine: 'sFe', surface_coal: 'sCo', bloomery: 'BLM',
-  farm: 'FRM', lumber_mill: 'SAW', quarry: 'QRY',
-  iron_mine: 'Fe', coal_mine: 'Co',
-  smelter: 'SMT', tool_factory: 'TLS',
-  concrete_factory: 'CON', steel_mill: 'STL',
-  machine_works: 'MCH', manufactory: 'MFG',
-  export_port: 'EXP', trade_depot: 'TRD',
-  settlement: 'SET', town: 'TWN', city: 'CTY',
-};
-
-interface SupplyRisk {
-  resource: string;
-  currentNet: number;
-  additionalDemand: number;
-  depth: number;
-}
-
-function analyzeSupplyRisks(
-  targetInputs: Partial<Record<ResourceType, number>>,
-  currentInputs: Partial<Record<ResourceType, number>> | undefined,
-  flowSummary: FlowSummary,
-  era: number,
-): SupplyRisk[] {
-  const risks: SupplyRisk[] = [];
-  const checked = new Set<string>();
-
-  const queue: { resource: string; demand: number; depth: number }[] = [];
-
-  for (const [res, amount] of Object.entries(targetInputs)) {
-    const oldAmount = currentInputs?.[res as ResourceType] || 0;
-    const additional = (amount as number) - oldAmount;
-    if (additional > 0.01) {
-      queue.push({ resource: res, demand: additional, depth: 0 });
-    }
-  }
-
-  while (queue.length > 0) {
-    const { resource, demand, depth } = queue.shift()!;
-    if (checked.has(resource)) continue;
-    checked.add(resource);
-
-    // Skip population — base trickle prevents true deadlocks
-    if (resource === 'population') continue;
-
-    const realized = flowSummary.realized[resource] || 0;
-    const consumed = flowSummary.consumed[resource] || 0;
-    const surplus = realized - consumed;
-
-    if (surplus >= demand - 0.01) continue; // sufficient supply
-
-    risks.push({ resource, currentNet: surplus, additionalDemand: demand, depth });
-
-    // If this resource isn't being produced, recurse into what could produce it
-    if (realized < 0.01) {
-      const producers = Object.values(BUILDINGS)
-        .filter(b => (b.outputs[resource as ResourceType] || 0) > 0 && b.unlockEra <= era)
-        .sort((a, b) => a.unlockEra - b.unlockEra);
-
-      if (producers.length > 0) {
-        for (const [res, amount] of Object.entries(producers[0].inputs)) {
-          if ((amount as number) > 0.001 && !checked.has(res)) {
-            queue.push({ resource: res, demand: amount as number, depth: depth + 1 });
-          }
-        }
-      }
-    }
-  }
-
-  return risks;
-}
-
-function renderSupplyWarnings(risks: SupplyRisk[]) {
-  if (risks.length === 0) return null;
-  return (
-    <div className="mt-1 space-y-0.5">
-      {risks.map(risk => (
-        <div key={risk.resource} className="text-[11px] text-amber-400 font-mono" style={{ paddingLeft: risk.depth * 10 }}>
-          {risk.depth > 0 ? '\u21b3 ' : '\u26a0 '}
-          <span className="capitalize">{risk.resource.replace('_', ' ')}</span>
-          {': '}
-          {risk.currentNet < 0.01
-            ? 'not produced'
-            : `surplus ${risk.currentNet.toFixed(1)}/s, need +${risk.additionalDemand.toFixed(1)}/s`}
-        </div>
-      ))}
-    </div>
-  );
-}
 
 function migrateOldSave(parsed: any): GameState {
+  // Migration logic kept same as before for safety
   const grid = parsed.grid || {};
-  // Ensure building grid covers full terrain extent
   for (let q = -GRID_RADIUS; q <= GRID_RADIUS; q++) {
     const r1 = Math.max(-GRID_RADIUS, -q - GRID_RADIUS);
     const r2 = Math.min(GRID_RADIUS, -q + GRID_RADIUS);
@@ -148,8 +51,6 @@ function migrateOldSave(parsed: any): GameState {
       if (!grid[key]) grid[key] = { q, r };
     }
   }
-
-  // Migrate hasRoad → infrastructure, adjacencyBonus → clusterBonus
   for (const key of Object.keys(grid)) {
     const hex = grid[key];
     if (hex.hasRoad) {
@@ -161,16 +62,11 @@ function migrateOldSave(parsed: any): GameState {
       hex.flowState.clusterSize = 1;
       delete hex.flowState.adjacencyBonus;
     }
-    // Strip old fields
     delete hex.lastEfficiency;
     delete hex.inputEfficiencies;
   }
-
-  // Migrate per-hex infrastructure to edge-based infrastructure
-  let infraEdges: Record<string, { type: InfrastructureType }> = parsed.infraEdges || {};
-  let infraConstructionSites = parsed.infraConstructionSites || [];
+  let infraEdges: Record<string, any> = parsed.infraEdges || {};
   if (!parsed.infraEdges) {
-    // Scan all hexes for old infrastructure field and create edges
     const infraHexes = Object.entries(grid).filter(([, h]: [string, any]) => h.infrastructure);
     for (const [, hex] of infraHexes as [string, any][]) {
       for (const n of getNeighbors(hex.q, hex.r)) {
@@ -179,58 +75,179 @@ function migrateOldSave(parsed: any): GameState {
         if (nHex && (nHex as any).infrastructure) {
           const ek = getEdgeKey(hex.q, hex.r, n.q, n.r);
           if (!infraEdges[ek]) {
-            // Use the slower (worse) type of the two connected hexes
             const INFRA_ORDER: Record<string, number> = { road: 2, rail: 1, canal: 0 };
             const hexType = hex.infrastructure as InfrastructureType;
             const nType = (nHex as any).infrastructure as InfrastructureType;
             const type = (INFRA_ORDER[hexType] ?? 2) >= (INFRA_ORDER[nType] ?? 2) ? hexType : nType;
-            infraEdges[ek] = { type };
+            infraEdges[ek] = setEdgeType(undefined, type);
           }
         }
       }
     }
-    // Delete infrastructure from all hexes and cancel old infra construction sites
     for (const key of Object.keys(grid)) {
       delete (grid[key] as any).infrastructure;
       if (grid[key].constructionSite && (grid[key].constructionSite as any).targetInfrastructure) {
         delete grid[key].constructionSite;
       }
     }
+  } else {
+    // Migrate old { type: string } edges to new { transport?, power? } format
+    const migrated: Record<string, any> = {};
+    for (const [ek, edge] of Object.entries(infraEdges)) {
+      if ((edge as any).type) {
+        migrated[ek] = setEdgeType(undefined, (edge as any).type as InfrastructureType);
+      } else {
+        migrated[ek] = edge;
+      }
+    }
+    infraEdges = migrated;
   }
-
+  // Clean up removed buildings from old saves
+  const removedBuildings = new Set(['solar_farm', 'battery_plant', 'chip_foundry']);
+  for (const key of Object.keys(grid)) {
+    const hex = grid[key];
+    if (hex.buildingId && removedBuildings.has(hex.buildingId)) {
+      delete hex.buildingId;
+      delete hex.constructionSite;
+      delete hex.flowState;
+    }
+    if (hex.constructionSite && removedBuildings.has(hex.constructionSite.targetBuildingId)) {
+      delete hex.constructionSite;
+    }
+  }
+  // Cap era at 7 for old saves that were era 8
+  const era = Math.min(parsed.era || 1, 7);
   return {
     flowSummary: parsed.flowSummary || emptyFlowSummary(),
     grid,
     terrainGrid: parsed.terrainGrid,
     infraEdges,
-    infraConstructionSites,
-    era: parsed.era || 1,
+    infraConstructionSites: parsed.infraConstructionSites || [],
+    era,
     tick: parsed.tick || 0,
-    showNetwork: parsed.showNetwork,
     totalExports: parsed.totalExports || {},
     exportRate: parsed.exportRate || {},
-    zones: parsed.zones || [],
+    tradeValue: parsed.tradeValue || 0,
+    marketPrices: parsed.marketPrices || {},
   };
+}
+
+// --- OPTIMIZED COMPONENTS ---
+
+interface HexCompProps {
+  hex: HexData;
+  isSelected: boolean;
+  isHovered: boolean;
+  onClick: () => void;
+  onMouseEnter: () => void;
+  onMouseLeave: () => void;
+}
+
+const HexFill = React.memo(({ hex, isSelected, isHovered, onClick, onMouseEnter, onMouseLeave }: HexCompProps) => {
+  const { x, y } = getHexPixelPos(hex);
+  const key = hexKey(hex.q, hex.r);
+  const hasConstruction = !!hex.constructionSite;
+  
+  let fill = 'transparent';
+  if (hasConstruction) {
+    const targetColor = BUILDING_COLORS[hex.constructionSite!.targetBuildingId] || '#a08000';
+    fill = targetColor + '18';
+  }
+  
+  if (isSelected) fill = '#ffffff30';
+  else if (isHovered) fill = '#ffffff15';
+
+  const hexCorners = getHexCorners({ x: 0, y: 0 }, HEX_SIZE, 30);
+  const cornersStr = hexCorners.map(p => `${p.x},${p.y}`).join(' ');
+
+  return (
+    <g transform={`translate(${x}, ${y})`} onMouseEnter={onMouseEnter} onMouseLeave={onMouseLeave} onClick={onClick} className="cursor-pointer">
+      <polygon points={cornersStr} fill={fill} stroke="none" />
+    </g>
+  );
+});
+
+interface HexOverlayProps {
+  hex: HexData;
+  isSelected: boolean;
+  isLabelHex: boolean;
+  isInCluster: boolean;
+  sameTypeEdges: Set<string>;
+  efficiency: number;
+}
+
+const HexOverlay = React.memo(({ hex, isSelected, isLabelHex, isInCluster, sameTypeEdges, efficiency }: HexOverlayProps) => {
+  const { x, y } = getHexPixelPos(hex);
+  const key = hexKey(hex.q, hex.r);
+  const hasConstruction = !!hex.constructionSite;
+  const buildingColor = hex.buildingId ? (BUILDING_COLORS[hex.buildingId] || '#666') : null;
+  const effColor = efficiency >= 0.9 ? '#4caf50' : efficiency >= 0.5 ? '#ffa726' : '#ef5350';
+  const inCluster = isInCluster || isLabelHex;
+  const hasBuilding = !!hex.buildingId && !hasConstruction;
+  const IconComponent = hex.buildingId ? BuildingIcons[hex.buildingId] : null;
+
+  const hexCorners = getHexCorners({ x: 0, y: 0 }, HEX_SIZE, 30);
+  const cornersStr = hexCorners.map(p => `${p.x},${p.y}`).join(' ');
+
+  return (
+    <g transform={`translate(${x}, ${y})`} className="pointer-events-none">
+      {isSelected && <polygon points={cornersStr} fill="none" stroke="#fbbf24" strokeWidth={3} opacity={0.8} />}
+      {hexCorners.map((corner, i) => {
+        const next = hexCorners[(i + 1) % 6];
+        if (sameTypeEdges.has(`${key}|${i}`)) return null;
+        if (hasBuilding) return <line key={i} x1={corner.x} y1={corner.y} x2={next.x} y2={next.y} stroke={buildingColor || '#fff'} strokeWidth={1.5} opacity={0.6} />;
+        return null;
+      })}
+      {hasConstruction && <polygon points={cornersStr} fill="none" stroke="#d4a017" strokeWidth={1} strokeDasharray="3,2" />}
+      {hasBuilding && IconComponent && isLabelHex && (
+        <g opacity={inCluster ? 1 : 0.9}>
+          <IconComponent color={buildingColor!} size={HEX_SIZE * 1.1} />
+        </g>
+      )}
+      {hasBuilding && efficiency < 0.99 && <circle cx={HEX_SIZE * 0.6} cy={-HEX_SIZE * 0.6} r={3} fill={effColor} stroke="#000" strokeWidth={0.5} />}
+      {hex.paused && hasBuilding && (
+        <g transform={`translate(${-HEX_SIZE * 0.55}, ${-HEX_SIZE * 0.55})`}>
+          <rect x={-2.5} y={-3.5} width={2} height={7} fill="#ef4444" rx={0.5} />
+          <rect x={0.5} y={-3.5} width={2} height={7} fill="#ef4444" rx={0.5} />
+        </g>
+      )}
+      {hasConstruction && (
+        <>
+          <rect x={-HEX_SIZE * 0.5} y={HEX_SIZE * 0.3} width={HEX_SIZE} height={3} fill="#1a1a1a" rx={1.5} />
+          <rect x={-HEX_SIZE * 0.5} y={HEX_SIZE * 0.3} width={HEX_SIZE * getConstructionProgress(hex.constructionSite!)} height={3} fill="#eab308" rx={1.5} />
+        </>
+      )}
+    </g>
+  );
+});
+
+function getHexPixelPos(hex: { q: number; r: number }) {
+  const { x: raw_x, y: raw_y } = pointyHexToPixel(hex.q, hex.r, HEX_SIZE);
+  const base_x = raw_x * Math.cos(BUILDING_ROT_ANGLE) - raw_y * Math.sin(BUILDING_ROT_ANGLE);
+  const base_y = raw_x * Math.sin(BUILDING_ROT_ANGLE) + raw_y * Math.cos(BUILDING_ROT_ANGLE);
+  return { x: base_x + BUILDING_OFFSET_X, y: base_y + BUILDING_OFFSET_Y };
+}
+
+function getConstructionProgress(site: ConstructionSite): number {
+  let totalNeeded = 0, totalDelivered = 0;
+  for (const [res, amount] of Object.entries(site.totalCost)) {
+    totalNeeded += amount;
+    totalDelivered += Math.min(site.delivered[res] || 0, amount);
+  }
+  return totalNeeded > 0 ? totalDelivered / totalNeeded : 1;
 }
 
 const App: React.FC = () => {
   const [gameState, setGameState] = useState<GameState>(() => {
     const saved = localStorage.getItem('industrializer_save');
     const resetPending = sessionStorage.getItem('industrializer_reset');
-
     if (saved && !resetPending) {
       try {
         const parsed = JSON.parse(saved);
-        if (parsed.terrainGrid && Object.keys(parsed.terrainGrid).length > 0) {
-          return migrateOldSave(parsed);
-        }
-      } catch (e) {
-        console.error("Failed to load save", e);
-      }
+        if (parsed.terrainGrid && Object.keys(parsed.terrainGrid).length > 0) return migrateOldSave(parsed);
+      } catch (e) { console.error("Failed to load save", e); }
     }
-
     if (resetPending) sessionStorage.removeItem('industrializer_reset');
-
     const terrainGrid: Record<string, TerrainHex> = {};
     for (let q = -TERRAIN_RADIUS; q <= TERRAIN_RADIUS; q++) {
       const r1 = Math.max(-TERRAIN_RADIUS, -q - TERRAIN_RADIUS);
@@ -244,7 +261,6 @@ const App: React.FC = () => {
         terrainGrid[hexKey(q, r)] = { q, r, terrain };
       }
     }
-
     const grid: Record<string, HexData> = {};
     for (let q = -GRID_RADIUS; q <= GRID_RADIUS; q++) {
       const r1 = Math.max(-GRID_RADIUS, -q - GRID_RADIUS);
@@ -253,7 +269,6 @@ const App: React.FC = () => {
         grid[hexKey(q, r)] = { q, r };
       }
     }
-
     return {
       flowSummary: emptyFlowSummary(),
       grid,
@@ -264,7 +279,8 @@ const App: React.FC = () => {
       tick: 0,
       totalExports: {},
       exportRate: {},
-      zones: [],
+      tradeValue: 0,
+      marketPrices: {},
     };
   });
 
@@ -274,61 +290,119 @@ const App: React.FC = () => {
 
   const [selectedHex, setSelectedHex] = useState<string | null>(null);
   const [hoveredHex, setHoveredHex] = useState<string | null>(null);
-  const [placingZoneType, setPlacingZoneType] = useState<ZoneType | null>(null);
-  const [showExportPanel, setShowExportPanel] = useState(false);
-  const [infraPlacementMode, setInfraPlacementMode] = useState<{
-    type: InfrastructureType; fromHex: string;
-  } | null>(null);
+  const [infraPlacementMode, setInfraPlacementMode] = useState<{ type: InfrastructureType; fromHex: string; } | null>(null);
+  const [buildTab, setBuildTab] = useState<'Agri' | 'Mine' | 'Ind' | 'Civic'>('Agri');
+  const [showResourceLedger, setShowResourceLedger] = useState(false);
+  const [gamePaused, setGamePaused] = useState(false);
 
-  // Zone helpers
-  const getZoneHexKeys = (zone: BonusZone): Set<string> => {
-    const keys = new Set<string>();
-    for (const h of getHexesInRadius(zone.centerQ, zone.centerR, ZONE_RADIUS)) {
-      keys.add(hexKey(h.q, h.r));
-    }
-    return keys;
-  };
+  // Flow dot animation — continuous spawner, fully outside React's render tree
+  interface FlowRoute {
+    pixels: { x: number; y: number }[];
+    segTimes: number[];     // cumulative time at each waypoint
+    totalTime: number;      // sum of per-segment costs (determines duration)
+    color: string;
+    duration: number;       // seconds per dot
+    spawnInterval: number;  // ms between spawns
+    nextSpawnTime: number;  // performance.now() timestamp
+  }
+  interface FlowDotAnim {
+    pixels: { x: number; y: number }[];
+    segTimes: number[];
+    totalTime: number;
+    color: string;
+    duration: number;
+    birthTime: number;
+  }
+  const flowRoutesRef = useRef<FlowRoute[]>([]);
+  const flowDotsRef = useRef<FlowDotAnim[]>([]);
+  const mapContainerRef = useRef<HTMLDivElement>(null);
+  const overlaySvgRef = useRef<SVGSVGElement | null>(null);
+  const rafIdRef = useRef(0);
+  const workerRef = useRef<Worker | null>(null);
+  const terrainAssocRef = useRef<Record<string, TerrainType[]>>({});
 
-  const zonesOverlap = (cq: number, cr: number, existingZones: BonusZone[]): boolean => {
-    const newHexes = new Set(getHexesInRadius(cq, cr, ZONE_RADIUS).map(h => hexKey(h.q, h.r)));
-    for (const z of existingZones) {
-      for (const h of getHexesInRadius(z.centerQ, z.centerR, ZONE_RADIUS)) {
-        if (newHexes.has(hexKey(h.q, h.r))) return true;
+  // Dynamic viewBox to fill container while keeping grid visible
+  const [mapViewBox, setMapViewBox] = useState('-600 -600 1200 1200');
+  useEffect(() => {
+    const container = mapContainerRef.current;
+    if (!container) return;
+    const updateViewBox = () => {
+      const w = container.clientWidth;
+      const h = container.clientHeight;
+      if (w === 0 || h === 0) return;
+      // Grid bounds: terrain radius 5, LARGE_HEX_SIZE 50, pointy-top
+      // Hex centers span ~-433..433 x, ~-375..375 y; corners add ~50px
+      const gridW = 980;
+      const gridH = 860;
+      const padding = 40;
+      const minW = gridW + padding * 2;
+      const minH = gridH + padding * 2;
+      const containerAspect = w / h;
+      const gridAspect = minW / minH;
+      let vbW: number, vbH: number;
+      if (containerAspect > gridAspect) {
+        vbH = minH;
+        vbW = minH * containerAspect;
+      } else {
+        vbW = minW;
+        vbH = minW / containerAspect;
       }
-    }
-    return false;
-  };
-
-  const placeZone = (centerQ: number, centerR: number) => {
-    if (!placingZoneType) return;
-    const count = gameState.zones.filter(z => z.type === placingZoneType).length;
-    if (count >= MAX_ZONES_PER_TYPE) return;
-    if (zonesOverlap(centerQ, centerR, gameState.zones)) return;
-    const zone: BonusZone = {
-      id: `${placingZoneType}_${Date.now()}`,
-      type: placingZoneType,
-      centerQ,
-      centerR,
+      const vb = `${-vbW / 2} ${-vbH / 2} ${vbW} ${vbH}`;
+      setMapViewBox(vb);
+      if (overlaySvgRef.current) overlaySvgRef.current.setAttribute('viewBox', vb);
     };
-    setGameState(prev => ({ ...prev, zones: [...prev.zones, zone] }));
-    setPlacingZoneType(null);
+    const ro = new ResizeObserver(updateViewBox);
+    ro.observe(container);
+    updateViewBox();
+    return () => ro.disconnect();
+  }, []);
+
+  // PRE-CALCULATE TERRAIN ASSOCIATIONS
+  const hexTerrainMap = useMemo(() => {
+    const map = new Map<string, TerrainType[]>();
+    for (const key of Object.keys(gameState.grid)) {
+      const hex = gameState.grid[key];
+      const { x: raw_x, y: raw_y } = pointyHexToPixel(hex.q, hex.r, HEX_SIZE);
+      const base_x = raw_x * Math.cos(BUILDING_ROT_ANGLE) - raw_y * Math.sin(BUILDING_ROT_ANGLE);
+      const base_y = raw_x * Math.sin(BUILDING_ROT_ANGLE) + raw_y * Math.cos(BUILDING_ROT_ANGLE);
+      const x = base_x + BUILDING_OFFSET_X;
+      const y = base_y + BUILDING_OFFSET_Y;
+      const tHexCoord = pixelToPointyHex(x, y, LARGE_HEX_SIZE);
+      const terrains = new Set<TerrainType>();
+      [tHexCoord, ...getNeighbors(tHexCoord.q, tHexCoord.r)].forEach(c => {
+        const terrainHex = gameState.terrainGrid[hexKey(c.q, c.r)];
+        if (terrainHex) {
+          const { x: tx, y: ty } = pointyHexToPixel(c.q, c.r, LARGE_HEX_SIZE);
+          const dist = Math.sqrt((x - tx) ** 2 + (y - ty) ** 2);
+          if (dist < LARGE_HEX_SIZE * 1.05) terrains.add(terrainHex.terrain);
+        }
+      });
+      map.set(key, Array.from(terrains));
+    }
+    return map;
+  }, [gameState.terrainGrid]);
+
+  const getAssociatedTerrains = (q: number, r: number): TerrainType[] => {
+    return hexTerrainMap.get(hexKey(q, r)) || [];
   };
 
-  const removeZone = (zoneId: string) => {
-    setGameState(prev => ({ ...prev, zones: prev.zones.filter(z => z.id !== zoneId) }));
-  };
+  // Sync terrain associations as a plain object for the Web Worker
+  useMemo(() => {
+    const obj: Record<string, TerrainType[]> = {};
+    hexTerrainMap.forEach((v, k) => { obj[k] = v; });
+    terrainAssocRef.current = obj;
+  }, [hexTerrainMap]);
 
-  // Escape key cancels zone/infra placement
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        if (placingZoneType) setPlacingZoneType(null);
         if (infraPlacementMode) setInfraPlacementMode(null);
+        if (selectedHex) setSelectedHex(null);
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [placingZoneType, infraPlacementMode]);
+  }, [infraPlacementMode, selectedHex]);
 
   const resetGame = () => {
     if (confirm('Are you sure you want to start a new game?')) {
@@ -338,128 +412,253 @@ const App: React.FC = () => {
     }
   };
 
-  const toggleNetwork = () => {
-    setGameState(prev => ({ ...prev, showNetwork: !prev.showNetwork }));
-  };
+  // Continuous flow dot animation — overlay SVG, rAF spawner + animator
+  useEffect(() => {
+    const container = mapContainerRef.current;
+    if (!container) return;
 
-  const INFRA_STEP_COSTS: Record<InfrastructureType, number> = { road: 0.5, rail: 0.2, canal: 0.15 };
+    // Create overlay SVG imperatively — React never sees or touches this
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', mapViewBox);
+    svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+    svg.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none;';
+    overlaySvgRef.current = svg;
+    const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+    svg.appendChild(g);
+    container.appendChild(svg);
 
-  const getPathCost = (start: HexData, end: HexData, grid: Record<string, HexData>, maxCost: number = 10): number => {
-    const queue: { hex: HexData, cost: number }[] = [{ hex: start, cost: 0 }];
-    const visited = new Set<string>();
-    visited.add(hexKey(start.q, start.r));
-    if (start.q === end.q && start.r === end.r) return 0;
+    const MAX_DOTS = 150;
 
-    while (queue.length > 0) {
-      queue.sort((a, b) => a.cost - b.cost);
-      const { hex: current, cost } = queue.shift()!;
-      if (cost > maxCost) continue;
-      if (current.q === end.q && current.r === end.r) return cost;
+    const animate = () => {
+      const now = performance.now();
+      const dots = flowDotsRef.current;
+      const routes = flowRoutesRef.current;
 
-      for (const n of getNeighbors(current.q, current.r)) {
-        const nKey = hexKey(n.q, n.r);
-        if (visited.has(nKey)) continue;
-        const nHex = grid[nKey];
-        if (!nHex) continue;
-        // Edge-based infrastructure: look up the edge between current and neighbor
-        const ek = getEdgeKey(current.q, current.r, n.q, n.r);
-        const edge = gameState.infraEdges[ek];
-        const stepCost = edge ? INFRA_STEP_COSTS[edge.type] : 1.0;
-        const newCost = cost + stepCost;
-        if (newCost <= maxCost) {
-          visited.add(nKey);
-          queue.push({ hex: nHex, cost: newCost });
+      // Spawn new dots from routes (continuous, not tick-based)
+      for (const route of routes) {
+        if (dots.length >= MAX_DOTS) break;
+        if (now >= route.nextSpawnTime) {
+          dots.push({
+            pixels: route.pixels,
+            segTimes: route.segTimes,
+            totalTime: route.totalTime,
+            color: route.color,
+            duration: route.duration,
+            birthTime: now,
+          });
+          route.nextSpawnTime = now + route.spawnInterval;
         }
       }
-    }
-    return Infinity;
-  };
 
-  const getAssociatedTerrains = (q: number, r: number): TerrainType[] => {
-    const { x: raw_x, y: raw_y } = pointyHexToPixel(q, r, HEX_SIZE);
-    const base_x = raw_x * Math.cos(BUILDING_ROT_ANGLE) - raw_y * Math.sin(BUILDING_ROT_ANGLE);
-    const base_y = raw_x * Math.sin(BUILDING_ROT_ANGLE) + raw_y * Math.cos(BUILDING_ROT_ANGLE);
-    const x = base_x + BUILDING_OFFSET_X;
-    const y = base_y + BUILDING_OFFSET_Y;
-    const tHexCoord = pixelToPointyHex(x, y, LARGE_HEX_SIZE);
-    const terrains = new Set<TerrainType>();
-
-    [tHexCoord, ...getNeighbors(tHexCoord.q, tHexCoord.r)].forEach(c => {
-      const terrainHex = gameState.terrainGrid[hexKey(c.q, c.r)];
-      if (terrainHex) {
-        const { x: tx, y: ty } = pointyHexToPixel(c.q, c.r, LARGE_HEX_SIZE);
-        const dist = Math.sqrt((x - tx) ** 2 + (y - ty) ** 2);
-        if (dist < LARGE_HEX_SIZE * 1.05) terrains.add(terrainHex.terrain);
+      // Prune finished dots in-place
+      let write = 0;
+      for (let i = 0; i < dots.length; i++) {
+        if ((now - dots[i].birthTime) / 1000 < dots[i].duration) dots[write++] = dots[i];
       }
-    });
-    return Array.from(terrains);
-  };
+      dots.length = write;
 
-  // Tick loop using the economy engine
+      // Sync SVG circle count
+      while (g.childNodes.length > dots.length) g.removeChild(g.lastChild!);
+      while (g.childNodes.length < dots.length) {
+        const c = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+        c.setAttribute('r', '2');
+        g.appendChild(c);
+      }
+
+      // Animate each dot
+      for (let i = 0; i < dots.length; i++) {
+        const dot = dots[i];
+        const c = g.childNodes[i] as SVGCircleElement;
+        const t = Math.min(1, (now - dot.birthTime) / 1000 / dot.duration);
+        // Interpolate along time-weighted path (speed varies per segment)
+        const targetTime = t * dot.totalTime;
+        let px = dot.pixels[0].x, py = dot.pixels[0].y;
+        for (let s = 1; s < dot.pixels.length; s++) {
+          if (dot.segTimes[s] >= targetTime) {
+            const segStart = dot.segTimes[s - 1];
+            const segLen = dot.segTimes[s] - segStart;
+            const st = segLen > 0 ? (targetTime - segStart) / segLen : 0;
+            px = dot.pixels[s - 1].x + (dot.pixels[s].x - dot.pixels[s - 1].x) * st;
+            py = dot.pixels[s - 1].y + (dot.pixels[s].y - dot.pixels[s - 1].y) * st;
+            break;
+          }
+        }
+        c.setAttribute('cx', px.toFixed(1));
+        c.setAttribute('cy', py.toFixed(1));
+        c.setAttribute('fill', dot.color);
+        // Fade in over first 8%, fade out over last 10%
+        const opacity = t < 0.08 ? (t / 0.08) * 0.85 : t > 0.9 ? ((1 - t) / 0.1) * 0.85 : 0.85;
+        c.setAttribute('opacity', opacity.toFixed(2));
+      }
+      rafIdRef.current = requestAnimationFrame(animate);
+    };
+    rafIdRef.current = requestAnimationFrame(animate);
+    return () => {
+      cancelAnimationFrame(rafIdRef.current);
+      container.removeChild(svg);
+    };
+  }, []);
+
+  // Web Worker for simulateTick — runs off main thread
   useEffect(() => {
-    const interval = setInterval(() => {
+    const worker = new Worker(new URL('./tickWorker.ts', import.meta.url), { type: 'module' });
+    workerRef.current = worker;
+
+    worker.onmessage = (e: MessageEvent) => {
+      const { grid: workerGrid, flowSummary, exportRate, infraEdges: workerInfra, infraConstructionSites: workerInfraCS, routeData } = e.data;
+
       setGameState(prev => {
-        const { grid, flowSummary, exportRate, infraEdges, infraConstructionSites } = simulateTick(
-          prev.grid, prev.terrainGrid, getPathCost, getAssociatedTerrains, prev.zones,
-          prev.infraEdges, prev.infraConstructionSites
-        );
-        // Accumulate exports
+        // Merge worker grid with current state: preserve user mutations made while worker was running
+        const sentGrid = sentGridRef.current;
+        const sentInfra = sentInfraRef.current;
+        const sentInfraCS = sentInfraCSRef.current;
+        let mergedGrid: Record<string, HexData>;
+        if (sentGrid) {
+          mergedGrid = { ...workerGrid };
+          for (const key of Object.keys(prev.grid)) {
+            const cur = prev.grid[key];
+            const sent = sentGrid[key];
+            // If the user changed this hex after we sent the tick, keep the user's version
+            if (cur.buildingId !== sent?.buildingId
+              || cur.constructionSite !== sent?.constructionSite
+              || cur.paused !== sent?.paused
+              || cur.prioritized !== sent?.prioritized) {
+              mergedGrid[key] = cur;
+            }
+          }
+        } else {
+          mergedGrid = workerGrid;
+        }
+        // Merge infra edges: keep user changes
+        let mergedInfraEdges: Record<string, InfrastructureEdge>;
+        if (sentInfra) {
+          mergedInfraEdges = { ...workerInfra };
+          // User-added edges
+          for (const ek of Object.keys(prev.infraEdges)) {
+            if (!(ek in sentInfra) && !(ek in workerInfra)) {
+              mergedInfraEdges[ek] = prev.infraEdges[ek];
+            }
+          }
+          // User-removed edges
+          for (const ek of Object.keys(sentInfra)) {
+            if (!(ek in prev.infraEdges) && ek in workerInfra) {
+              delete mergedInfraEdges[ek];
+            }
+          }
+        } else {
+          mergedInfraEdges = workerInfra;
+        }
+        // Merge infra construction sites: keep user-added sites
+        let mergedInfraCS: InfraEdgeConstructionSite[];
+        if (sentInfraCS) {
+          const workerEdgeKeys = new Set(workerInfraCS.map((s: InfraEdgeConstructionSite) => s.edgeKey));
+          const sentEdgeKeys = new Set(sentInfraCS.map((s: InfraEdgeConstructionSite) => s.edgeKey));
+          mergedInfraCS = [...workerInfraCS];
+          // Add any construction sites the user started after the tick was sent
+          for (const cs of prev.infraConstructionSites) {
+            if (!sentEdgeKeys.has(cs.edgeKey) && !workerEdgeKeys.has(cs.edgeKey)) {
+              mergedInfraCS.push(cs);
+            }
+          }
+        } else {
+          mergedInfraCS = workerInfraCS;
+        }
+
         const totalExports = { ...prev.totalExports };
         for (const [res, amount] of Object.entries(exportRate)) {
-          totalExports[res] = (totalExports[res] || 0) + amount;
+          totalExports[res] = (totalExports[res] || 0) + (amount as number);
         }
-        // Auto-advance era based on cumulative export milestones
+        const marketPrices = computeMarketPrices(totalExports);
+        const tradeValue = computeTradeValue(exportRate, marketPrices);
         let era = prev.era;
-        while (era < 6 && ERA_MILESTONES[era + 1]) {
+        while (ERA_MILESTONES[era + 1]) {
           const milestone = ERA_MILESTONES[era + 1];
-          const met = Object.entries(milestone.requirements).every(
-            ([res, needed]) => (totalExports[res] || 0) >= (needed as number)
-          );
+          let met = false;
+          if (milestone.type === 'cumulative' && milestone.requirements) {
+            met = Object.entries(milestone.requirements).every(
+              ([res, needed]) => (totalExports[res] || 0) >= (needed as number)
+            );
+          } else if (milestone.type === 'rate' && milestone.tradeValueTarget) {
+            met = tradeValue >= milestone.tradeValueTarget;
+          }
           if (met) era++;
           else break;
         }
-        return { ...prev, grid, flowSummary, era, tick: prev.tick + 1, exportRate, totalExports, infraEdges, infraConstructionSites };
+        return { ...prev, grid: mergedGrid, flowSummary, era, tick: prev.tick + 1, exportRate, totalExports, marketPrices, tradeValue, infraEdges: mergedInfraEdges, infraConstructionSites: mergedInfraCS };
+      });
+
+      // Build flow routes from worker-computed paths (lightweight — just pixel conversion)
+      const now = performance.now();
+      const newRoutes: typeof flowRoutesRef.current = [];
+      for (const { fp, path, segCosts } of routeData) {
+        const pixels = path.map((h: { q: number; r: number }) => getHexPixelPos(h));
+        if (pixels.length < 2) continue;
+        // Build cumulative time from per-segment visual costs
+        const segTimes = [0];
+        let totalTime = 0;
+        for (let s = 0; s < segCosts.length; s++) {
+          totalTime += segCosts[s];
+          segTimes.push(totalTime);
+        }
+        if (totalTime < 0.01) continue;
+        const duration = Math.max(2.0, totalTime * 3.0);
+        const spawnInterval = Math.max(800, Math.min(12000, 1000 / (fp.amount * 0.1)));
+        newRoutes.push({
+          pixels, segTimes, totalTime,
+          color: RESOURCE_COLORS[fp.resource] || '#fff',
+          duration, spawnInterval,
+          nextSpawnTime: now + Math.random() * spawnInterval,
+        });
+      }
+      flowRoutesRef.current = newRoutes;
+    };
+
+    return () => worker.terminate();
+  }, []);
+
+  // Track grid snapshot sent to worker so we can detect user mutations
+  const sentGridRef = useRef<Record<string, HexData> | null>(null);
+  const sentInfraRef = useRef<Record<string, InfrastructureEdge> | null>(null);
+  const sentInfraCSRef = useRef<InfraEdgeConstructionSite[] | null>(null);
+
+  // Tick interval — posts state to worker (instant, no blocking)
+  const gameStateRef = useRef(gameState);
+  gameStateRef.current = gameState;
+
+  useEffect(() => {
+    if (gamePaused) return;
+    const interval = setInterval(() => {
+      const state = gameStateRef.current;
+      sentGridRef.current = state.grid;
+      sentInfraRef.current = state.infraEdges;
+      sentInfraCSRef.current = state.infraConstructionSites;
+      workerRef.current?.postMessage({
+        grid: state.grid,
+        terrainGrid: state.terrainGrid,
+        terrainAssociations: terrainAssocRef.current,
+        infraEdges: state.infraEdges,
+        infraConstructionSites: state.infraConstructionSites,
       });
     }, 1000);
     return () => clearInterval(interval);
-  }, []);
+  }, [gamePaused]);
 
   const buildBuilding = (buildingId: string) => {
     if (!selectedHex) return;
     const building = BUILDINGS[buildingId];
     const hex = gameState.grid[selectedHex];
-
-    // Create construction site
     const totalCost: Record<string, number> = {};
     for (const [res, amount] of Object.entries(building.cost)) {
       totalCost[res] = amount as number;
     }
-
-    // If building has no cost, place it instantly
     if (Object.keys(totalCost).length === 0) {
-      setGameState(prev => ({
-        ...prev,
-        grid: { ...prev.grid, [selectedHex]: { ...hex, buildingId } },
-      }));
+      setGameState(prev => ({ ...prev, grid: { ...prev.grid, [selectedHex]: { ...hex, buildingId } } }));
       return;
     }
-
     const delivered: Record<string, number> = {};
-    for (const res of Object.keys(totalCost)) {
-      delivered[res] = 0;
-    }
-
-    const constructionSite: ConstructionSite = {
-      targetBuildingId: buildingId,
-      totalCost,
-      delivered,
-      isUpgrade: false,
-    };
-
-    setGameState(prev => ({
-      ...prev,
-      grid: { ...prev.grid, [selectedHex]: { ...hex, constructionSite } },
-    }));
+    for (const res of Object.keys(totalCost)) delivered[res] = 0;
+    const constructionSite: ConstructionSite = { targetBuildingId: buildingId, totalCost, delivered, isUpgrade: false };
+    setGameState(prev => ({ ...prev, grid: { ...prev.grid, [selectedHex]: { ...hex, constructionSite } } }));
   };
 
   const startInfraPlacement = (type: InfrastructureType) => {
@@ -470,99 +669,101 @@ const App: React.FC = () => {
   const completeInfraPlacement = (toHexKey: string) => {
     if (!infraPlacementMode) return;
     const { type, fromHex } = infraPlacementMode;
-    const fromCoords = fromHex.split(',').map(Number);
-    const toCoords = toHexKey.split(',').map(Number);
-    const fromQ = fromCoords[0], fromR = fromCoords[1];
-    const toQ = toCoords[0], toR = toCoords[1];
+    const [fromQ, fromR] = fromHex.split(',').map(Number);
+    const [toQ, toR] = toHexKey.split(',').map(Number);
 
-    // 1. Adjacency check
     const neighbors = getNeighbors(fromQ, fromR);
-    if (!neighbors.some(n => n.q === toQ && n.r === toR)) {
-      setInfraPlacementMode(null);
-      return;
-    }
-
+    if (!neighbors.some(n => n.q === toQ && n.r === toR)) { setInfraPlacementMode(null); return; }
     const ek = getEdgeKey(fromQ, fromR, toQ, toR);
     const existingEdge = gameState.infraEdges[ek];
+    if (edgeHasType(existingEdge, type)) { setInfraPlacementMode(null); return; }
 
-    // 2. No same-type edge already exists (allow upgrade to better type)
-    if (existingEdge && existingEdge.type === type) {
-      setInfraPlacementMode(null);
-      return;
+    // Hypothetical new state: real edges + construction site ghosts + the new edge
+    const nextInfraEdges: Record<string, InfrastructureEdge> = {};
+    for (const [k, e] of Object.entries(gameState.infraEdges)) nextInfraEdges[k] = { ...e };
+    for (const site of gameState.infraConstructionSites) {
+      nextInfraEdges[site.edgeKey] = setEdgeType(nextInfraEdges[site.edgeKey], site.targetType);
+    }
+    nextInfraEdges[ek] = setEdgeType(nextInfraEdges[ek], type);
+
+    // Check Max Connections (physical edge count, not per-type)
+    const fromConns = countHexConnections(fromQ, fromR, nextInfraEdges);
+    const toConns = countHexConnections(toQ, toR, nextInfraEdges);
+    if (fromConns > MAX_INFRA_CONNECTIONS || toConns > MAX_INFRA_CONNECTIONS) {
+       setInfraPlacementMode(null);
+       return;
     }
 
-    // 3. Both hexes < MAX_INFRA_CONNECTIONS (excluding existing edge between them if upgrading)
-    const fromConns = countHexConnections(fromQ, fromR, gameState.infraEdges);
-    const toConns = countHexConnections(toQ, toR, gameState.infraEdges);
-    const alreadyConnected = existingEdge ? 1 : 0;
-    if (fromConns - alreadyConnected >= MAX_INFRA_CONNECTIONS || toConns - alreadyConnected >= MAX_INFRA_CONNECTIONS) {
-      setInfraPlacementMode(null);
-      return;
-    }
-
-    // 4. Network connectivity: first segment ever OR at least one hex already in network (canals exempt)
-    if (type !== 'canal') {
-      const totalEdges = Object.keys(gameState.infraEdges).length;
-      if (totalEdges > 0 && !alreadyConnected) {
-        const fromInNetwork = countHexConnections(fromQ, fromR, gameState.infraEdges) > 0;
-        const toInNetwork = countHexConnections(toQ, toR, gameState.infraEdges) > 0;
-        if (!fromInNetwork && !toInNetwork) {
+    // Check Spacing Rules (per-type intersection check)
+    const spacing = INFRA_SPACING[type];
+    const fromTypeConns = countHexConnections(fromQ, fromR, nextInfraEdges, type);
+    const toTypeConns = countHexConnections(toQ, toR, nextInfraEdges, type);
+    if (fromTypeConns > 2) {
+       if (hasIntersectionInRadius(fromQ, fromR, type, nextInfraEdges, spacing)) {
           setInfraPlacementMode(null);
+          console.log("Invalid placement: Intersection too close");
           return;
-        }
+       }
+    }
+    if (toTypeConns > 2) {
+       if (hasIntersectionInRadius(toQ, toR, type, nextInfraEdges, spacing)) {
+          setInfraPlacementMode(null);
+          console.log("Invalid placement: Intersection too close");
+          return;
+       }
+    }
+
+    if (type !== 'canal') {
+      // Check connectivity: at least one endpoint must already be in the network
+      const edgesWithoutNew: Record<string, InfrastructureEdge> = {};
+      for (const [k, e] of Object.entries(nextInfraEdges)) edgesWithoutNew[k] = { ...e };
+      delete edgesWithoutNew[ek];
+      const totalEdges = Object.keys(edgesWithoutNew).length;
+      if (totalEdges > 0) {
+         const fromIn = countHexConnections(fromQ, fromR, edgesWithoutNew) > 0;
+         const toIn = countHexConnections(toQ, toR, edgesWithoutNew) > 0;
+         if (!fromIn && !toIn) { setInfraPlacementMode(null); return; }
       }
     }
 
-    // 5. No pending construction site for this edge
-    if (gameState.infraConstructionSites.some(s => s.edgeKey === ek)) {
-      setInfraPlacementMode(null);
-      return;
-    }
+    // Block if same-category construction already in progress on this edge
+    const placingPower = isPowerInfra(type);
+    if (gameState.infraConstructionSites.some(s => s.edgeKey === ek && isPowerInfra(s.targetType) === placingPower)) { setInfraPlacementMode(null); return; }
 
     const costs = INFRASTRUCTURE_COSTS[type];
-    const isUpgrade = !!existingEdge;
-
-    // Instant for road (no cost), construction site for rail/canal
+    // Upgrade only within same category
+    const sameCategoryExists = existingEdge && (placingPower ? !!existingEdge.power : !!existingEdge.transport);
+    const isUpgrade = !!sameCategoryExists;
+    const previousType = isUpgrade ? (placingPower ? existingEdge!.power : existingEdge!.transport) : undefined;
     if (Object.keys(costs).length === 0) {
-      setGameState(prev => ({
-        ...prev,
-        infraEdges: { ...prev.infraEdges, [ek]: { type } },
-      }));
+      setGameState(prev => ({ ...prev, infraEdges: { ...prev.infraEdges, [ek]: setEdgeType(prev.infraEdges[ek], type) } }));
     } else {
       const totalCost: Record<string, number> = {};
-      for (const [res, amount] of Object.entries(costs)) {
-        totalCost[res] = amount as number;
-      }
+      for (const [res, amount] of Object.entries(costs)) totalCost[res] = amount as number;
       const delivered: Record<string, number> = {};
-      for (const res of Object.keys(totalCost)) {
-        delivered[res] = 0;
-      }
-      const site: InfraEdgeConstructionSite = {
-        edgeKey: ek,
-        hexA: { q: fromQ, r: fromR },
-        hexB: { q: toQ, r: toR },
-        targetType: type,
-        totalCost,
-        delivered,
-        isUpgrade,
-        previousType: existingEdge?.type,
-      };
-      setGameState(prev => ({
-        ...prev,
-        infraConstructionSites: [...prev.infraConstructionSites, site],
-      }));
+      for (const res of Object.keys(totalCost)) delivered[res] = 0;
+      const site: InfraEdgeConstructionSite = { edgeKey: ek, hexA: { q: fromQ, r: fromR }, hexB: { q: toQ, r: toR }, targetType: type, totalCost, delivered, isUpgrade, previousType };
+      setGameState(prev => ({ ...prev, infraConstructionSites: [...prev.infraConstructionSites, site] }));
     }
-
     setInfraPlacementMode(null);
   };
 
-  const demolishInfraEdge = (edgeKey: string) => {
+  const demolishInfraEdge = (edgeKey: string, category?: 'transport' | 'power') => {
     setGameState(prev => {
-      // Remove completed edge
       const newEdges = { ...prev.infraEdges };
-      delete newEdges[edgeKey];
-      // Remove any pending construction site for this edge
-      const newSites = prev.infraConstructionSites.filter(s => s.edgeKey !== edgeKey);
+      const edge = newEdges[edgeKey];
+      if (edge && category) {
+        const updated = { ...edge };
+        if (category === 'transport') delete updated.transport;
+        else delete updated.power;
+        if (!updated.transport && !updated.power) delete newEdges[edgeKey];
+        else newEdges[edgeKey] = updated;
+      } else {
+        delete newEdges[edgeKey];
+      }
+      const newSites = category
+        ? prev.infraConstructionSites.filter(s => !(s.edgeKey === edgeKey && isPowerInfra(s.targetType) === (category === 'power')))
+        : prev.infraConstructionSites.filter(s => s.edgeKey !== edgeKey);
       return { ...prev, infraEdges: newEdges, infraConstructionSites: newSites };
     });
   };
@@ -573,64 +774,39 @@ const App: React.FC = () => {
     if (!hex.buildingId) return;
     const building = BUILDINGS[hex.buildingId];
     if (!building.upgradesTo || !building.upgradeCost) return;
-
+    if (BUILDINGS[building.upgradesTo].unlockEra > gameState.era) return;
     const totalCost: Record<string, number> = {};
-    for (const [res, amount] of Object.entries(building.upgradeCost)) {
-      totalCost[res] = amount as number;
-    }
-
+    for (const [res, amount] of Object.entries(building.upgradeCost)) totalCost[res] = amount as number;
     const delivered: Record<string, number> = {};
-    for (const res of Object.keys(totalCost)) {
-      delivered[res] = 0;
-    }
-
-    // If upgrade has no cost, do it instantly
+    for (const res of Object.keys(totalCost)) delivered[res] = 0;
     if (Object.keys(totalCost).length === 0) {
-      setGameState(prev => ({
-        ...prev,
-        grid: { ...prev.grid, [selectedHex]: { ...hex, buildingId: building.upgradesTo } },
-      }));
+      setGameState(prev => ({ ...prev, grid: { ...prev.grid, [selectedHex]: { ...hex, buildingId: building.upgradesTo } } }));
       return;
     }
-
-    const constructionSite: ConstructionSite = {
-      targetBuildingId: building.upgradesTo,
-      totalCost,
-      delivered,
-      isUpgrade: true,
-      previousBuildingId: hex.buildingId,
-    };
-
-    setGameState(prev => ({
-      ...prev,
-      grid: { ...prev.grid, [selectedHex]: { ...hex, constructionSite } },
-    }));
+    const constructionSite: ConstructionSite = { targetBuildingId: building.upgradesTo, totalCost, delivered, isUpgrade: true, previousBuildingId: hex.buildingId };
+    setGameState(prev => ({ ...prev, grid: { ...prev.grid, [selectedHex]: { ...hex, constructionSite } } }));
   };
 
   const togglePriority = () => {
     if (!selectedHex) return;
     const hex = gameState.grid[selectedHex];
-    setGameState(prev => ({
-      ...prev,
-      grid: { ...prev.grid, [selectedHex]: { ...hex, prioritized: !hex.prioritized } },
-    }));
+    setGameState(prev => ({ ...prev, grid: { ...prev.grid, [selectedHex]: { ...hex, prioritized: !hex.prioritized } } }));
+  };
+
+  const togglePaused = () => {
+    if (!selectedHex) return;
+    const hex = gameState.grid[selectedHex];
+    setGameState(prev => ({ ...prev, grid: { ...prev.grid, [selectedHex]: { ...hex, paused: !hex.paused } } }));
   };
 
   const demolishBuilding = () => {
     if (!selectedHex) return;
     const hex = gameState.grid[selectedHex];
-    setGameState(prev => ({
-      ...prev,
-      grid: {
-        ...prev.grid,
-        [selectedHex]: { ...hex, buildingId: undefined, constructionSite: undefined, flowState: undefined },
-      },
-    }));
+    setGameState(prev => ({ ...prev, grid: { ...prev.grid, [selectedHex]: { ...hex, buildingId: undefined, constructionSite: undefined, flowState: undefined } } }));
   };
 
   const getConstructionProgress = (site: ConstructionSite): number => {
-    let totalNeeded = 0;
-    let totalDelivered = 0;
+    let totalNeeded = 0, totalDelivered = 0;
     for (const [res, amount] of Object.entries(site.totalCost)) {
       totalNeeded += amount;
       totalDelivered += Math.min(site.delivered[res] || 0, amount);
@@ -638,19 +814,24 @@ const App: React.FC = () => {
     return totalNeeded > 0 ? totalDelivered / totalNeeded : 1;
   };
 
-  // Compute contiguous same-type building clusters for visual merging
+  const getEdgeConstructionProgress = (site: InfraEdgeConstructionSite): number => {
+    let totalNeeded = 0, totalDelivered = 0;
+    for (const [res, amount] of Object.entries(site.totalCost)) {
+      totalNeeded += amount;
+      totalDelivered += Math.min(site.delivered[res] || 0, amount);
+    }
+    return totalNeeded > 0 ? totalDelivered / totalNeeded : 1;
+  };
+
+  // Rendering helpers
   const clusterInfo = useMemo(() => {
     const sameTypeEdges = new Set<string>();
     const labelHex = new Map<string, string>();
     const visited = new Set<string>();
-    const directions = [
-      { q: 1, r: 0 }, { q: 1, r: -1 }, { q: 0, r: -1 },
-      { q: -1, r: 0 }, { q: -1, r: 1 }, { q: 0, r: 1 },
-    ];
+    const directions = [{ q: 1, r: 0 }, { q: 1, r: -1 }, { q: 0, r: -1 }, { q: -1, r: 0 }, { q: -1, r: 1 }, { q: 0, r: 1 }];
 
     for (const [key, hex] of Object.entries(gameState.grid)) {
       if (!hex.buildingId || hex.constructionSite || visited.has(key)) continue;
-      // BFS to find all contiguous same-type members
       const cluster: string[] = [];
       const queue = [key];
       visited.add(key);
@@ -659,9 +840,7 @@ const App: React.FC = () => {
         cluster.push(cur);
         const curHex = gameState.grid[cur];
         for (const d of directions) {
-          const nq = curHex.q + d.q;
-          const nr = curHex.r + d.r;
-          const nk = hexKey(nq, nr);
+          const nk = hexKey(curHex.q + d.q, curHex.r + d.r);
           if (visited.has(nk)) continue;
           const nHex = gameState.grid[nk];
           if (nHex && nHex.buildingId === hex.buildingId && !nHex.constructionSite) {
@@ -670,43 +849,42 @@ const App: React.FC = () => {
           }
         }
       }
-
-      // Mark internal edges (edge index i faces neighbor at directions[5-i])
       for (const memberKey of cluster) {
         const mHex = gameState.grid[memberKey];
         for (let i = 0; i < 6; i++) {
           const nd = directions[5 - i];
-          const nq = mHex.q + nd.q;
-          const nr = mHex.r + nd.r;
-          const nk = hexKey(nq, nr);
-          if (cluster.includes(nk)) {
-            sameTypeEdges.add(`${memberKey}|${i}`);
-          }
+          const nk = hexKey(mHex.q + nd.q, mHex.r + nd.r);
+          if (cluster.includes(nk)) sameTypeEdges.add(`${memberKey}|${i}`);
         }
       }
-
-      // Label hex: member closest to geometric centroid
-      if (cluster.length === 1) {
-        labelHex.set(cluster[0], cluster[0]);
-      } else {
+      if (cluster.length === 1) labelHex.set(cluster[0], cluster[0]);
+      else {
         let cx = 0, cy = 0;
         const positions = cluster.map(k => {
           const h = gameState.grid[k];
           const pos = pointyHexToPixel(h.q, h.r, HEX_SIZE);
-          cx += pos.x;
-          cy += pos.y;
+          cx += pos.x; cy += pos.y;
           return { key: k, x: pos.x, y: pos.y };
         });
-        cx /= cluster.length;
-        cy /= cluster.length;
-        let bestKey = cluster[0];
-        let bestDist = Infinity;
+        cx /= cluster.length; cy /= cluster.length;
+        let bestKey = cluster[0], bestDist = Infinity;
         for (const p of positions) {
           const d = (p.x - cx) ** 2 + (p.y - cy) ** 2;
           if (d < bestDist) { bestDist = d; bestKey = p.key; }
         }
-        for (const k of cluster) {
-          labelHex.set(k, bestKey);
+        for (const k of cluster) labelHex.set(k, bestKey);
+      }
+    }
+    // Hub buildings act as wildcards: suppress cluster borders between them and adjacent buildings
+    const HUB_BUILDINGS = new Set(Object.keys(HUB_RADIUS));
+    for (const [key, hex] of Object.entries(gameState.grid)) {
+      if (!hex.buildingId || hex.constructionSite || !HUB_BUILDINGS.has(hex.buildingId)) continue;
+      for (let i = 0; i < 6; i++) {
+        const nd = directions[5 - i];
+        const nk = hexKey(hex.q + nd.q, hex.r + nd.r);
+        const nHex = gameState.grid[nk];
+        if (nHex?.buildingId && !nHex.constructionSite) {
+          sameTypeEdges.add(`${key}|${i}`);
         }
       }
     }
@@ -722,87 +900,10 @@ const App: React.FC = () => {
     const color = TERRAIN_COLORS[hex.terrain];
     return (
       <g key={`t-${hex.q},${hex.r}`} transform={`translate(${x}, ${y})`}>
-        <polygon points={terrainCornersStr} fill={color} opacity={0.35} />
-        <polygon points={terrainCornersStr} fill="none" stroke={color} strokeWidth={1} opacity={0.15} />
+        <polygon points={terrainCornersStr} fill={color} />
+        <polygon points={terrainCornersStr} fill="none" stroke="#000000" strokeWidth={0.5} opacity={0.3} />
       </g>
     );
-  };
-
-  const getHexPixel = (q: number, r: number) => {
-    const { x: raw_x, y: raw_y } = pointyHexToPixel(q, r, HEX_SIZE);
-    const bx = raw_x * Math.cos(BUILDING_ROT_ANGLE) - raw_y * Math.sin(BUILDING_ROT_ANGLE) + BUILDING_OFFSET_X;
-    const by = raw_x * Math.sin(BUILDING_ROT_ANGLE) + raw_y * Math.cos(BUILDING_ROT_ANGLE) + BUILDING_OFFSET_Y;
-    return { x: bx, y: by };
-  };
-
-  const getEdgeConstructionProgress = (site: InfraEdgeConstructionSite): number => {
-    let totalNeeded = 0;
-    let totalDelivered = 0;
-    for (const [res, amount] of Object.entries(site.totalCost)) {
-      totalNeeded += amount;
-      totalDelivered += Math.min(site.delivered[res] || 0, amount);
-    }
-    return totalNeeded > 0 ? totalDelivered / totalNeeded : 1;
-  };
-
-  const renderInfrastructureEdges = () => {
-    const elements: React.ReactNode[] = [];
-
-    for (const [ek, edge] of Object.entries(gameState.infraEdges)) {
-      const [a, b] = parseEdgeKey(ek);
-      const pa = getHexPixel(a.q, a.r);
-      const pb = getHexPixel(b.q, b.r);
-      const dx = pb.x - pa.x;
-      const dy = pb.y - pa.y;
-
-      if (edge.type === 'canal') {
-        elements.push(
-          <g key={ek} className="pointer-events-none">
-            <line x1={pa.x} y1={pa.y} x2={pb.x} y2={pb.y} stroke="#0d47a1" strokeWidth={6} strokeLinecap="round" opacity={0.7} />
-            <line x1={pa.x} y1={pa.y} x2={pb.x} y2={pb.y} stroke="#42a5f5" strokeWidth={2.5} strokeLinecap="round" />
-          </g>
-        );
-      } else if (edge.type === 'rail') {
-        const perpX = -dy;
-        const perpY = dx;
-        const len = Math.sqrt(perpX * perpX + perpY * perpY);
-        const off = len > 0 ? 2.5 / len : 0;
-        elements.push(
-          <g key={ek} className="pointer-events-none">
-            <line x1={pa.x} y1={pa.y} x2={pb.x} y2={pb.y} stroke="#3e2723" strokeWidth={6} strokeLinecap="round" opacity={0.5} />
-            <line x1={pa.x + perpX * off} y1={pa.y + perpY * off} x2={pb.x + perpX * off} y2={pb.y + perpY * off} stroke="#8d6e63" strokeWidth={1.5} strokeLinecap="round" />
-            <line x1={pa.x - perpX * off} y1={pa.y - perpY * off} x2={pb.x - perpX * off} y2={pb.y - perpY * off} stroke="#8d6e63" strokeWidth={1.5} strokeLinecap="round" />
-            <line x1={pa.x} y1={pa.y} x2={pb.x} y2={pb.y} stroke="#a1887f" strokeWidth={0.5} strokeDasharray="2,4" />
-          </g>
-        );
-      } else {
-        elements.push(
-          <g key={ek} className="pointer-events-none">
-            <line x1={pa.x} y1={pa.y} x2={pb.x} y2={pb.y} stroke="#424242" strokeWidth={5} strokeLinecap="round" opacity={0.6} />
-            <line x1={pa.x} y1={pa.y} x2={pb.x} y2={pb.y} stroke="#9e9e9e" strokeWidth={1.5} strokeDasharray="3,3" />
-          </g>
-        );
-      }
-    }
-
-    for (const site of gameState.infraConstructionSites) {
-      const pa = getHexPixel(site.hexA.q, site.hexA.r);
-      const pb = getHexPixel(site.hexB.q, site.hexB.r);
-      const progress = getEdgeConstructionProgress(site);
-      const midX = (pa.x + pb.x) / 2;
-      const midY = (pa.y + pb.y) / 2;
-      const color = site.targetType === 'canal' ? '#42a5f5' : site.targetType === 'rail' ? '#8d6e63' : '#9e9e9e';
-
-      elements.push(
-        <g key={`cs-${site.edgeKey}`} className="pointer-events-none">
-          <line x1={pa.x} y1={pa.y} x2={pb.x} y2={pb.y} stroke={color} strokeWidth={3} strokeLinecap="round" strokeDasharray="4,4" opacity={0.35} />
-          <rect x={midX - 8} y={midY - 1.5} width={16} height={3} fill="#111" rx={1.5} opacity={0.8} />
-          <rect x={midX - 8} y={midY - 1.5} width={16 * progress} height={3} fill="#eab308" rx={1.5} />
-        </g>
-      );
-    }
-
-    return elements;
   };
 
   const getHexPixelPos = (hex: HexData) => {
@@ -815,651 +916,951 @@ const App: React.FC = () => {
   const hexCorners = getHexCorners({ x: 0, y: 0 }, HEX_SIZE, 30);
   const hexCornersStr = hexCorners.map(p => `${p.x},${p.y}`).join(' ');
 
-  // Pass 1: fills + interaction (rendered first, below borders)
   const renderHexFill = (hex: HexData) => {
     const { x, y } = getHexPixelPos(hex);
     const key = hexKey(hex.q, hex.r);
     const isSelected = selectedHex === key;
     const isHovered = hoveredHex === key;
-    const associatedTerrains = getAssociatedTerrains(hex.q, hex.r);
-    const primaryTerrain = associatedTerrains[0] || 'water';
     const hasConstruction = !!hex.constructionSite;
     const buildingColor = hex.buildingId ? (BUILDING_COLORS[hex.buildingId] || '#666') : null;
     const isInCluster = hex.buildingId && !hex.constructionSite && clusterInfo.labelHex.has(key) && clusterInfo.labelHex.get(key) !== key;
     const isLabelHex = hex.buildingId && !hex.constructionSite && clusterInfo.labelHex.get(key) === key;
     const inCluster = isInCluster || isLabelHex;
-
     let fill = 'transparent';
-    if (buildingColor && !hasConstruction) {
-      fill = inCluster ? buildingColor + 'e0' : buildingColor + '35';
-    } else if (hasConstruction) {
+    if (buildingColor && !hasConstruction) fill = inCluster ? buildingColor + '20' : 'transparent';
+    else if (hasConstruction) {
       const targetColor = BUILDING_COLORS[hex.constructionSite!.targetBuildingId] || '#a08000';
       fill = targetColor + '18';
     }
-    if (isHovered) {
-      fill = buildingColor ? (inCluster ? buildingColor + 'f0' : buildingColor + '50') : '#ffffff18';
-    }
-    if (isSelected) {
-      fill = buildingColor ? (inCluster ? buildingColor + 'f0' : buildingColor + '60') : '#ffffff25';
-    }
-
+    if (isSelected) fill = '#ffffff30';
+    else if (isHovered) fill = '#ffffff15';
     return (
       <g key={key} transform={`translate(${x}, ${y})`} onMouseEnter={() => setHoveredHex(key)} onMouseLeave={() => setHoveredHex(null)} onClick={() => {
         if (infraPlacementMode) { completeInfraPlacement(key); }
-        else if (placingZoneType) { placeZone(hex.q, hex.r); }
         else { setSelectedHex(key); }
-      }} className="cursor-pointer">
-        <polygon points={hexCornersStr} fill={fill} stroke="none" />
-        {!hex.buildingId && !hasConstruction && (
-          <circle cx={0} cy={0} r={1.5} fill={TERRAIN_COLORS[primaryTerrain as TerrainType]} opacity={0.5} />
-        )}
-      </g>
+      }} className="cursor-pointer"><polygon points={hexCornersStr} fill={fill} stroke="none" /></g>
     );
   };
 
-  // Pass 2: borders, labels, rings (rendered on top, pointer-events-none)
   const renderHexOverlay = (hex: HexData) => {
     const { x, y } = getHexPixelPos(hex);
     const key = hexKey(hex.q, hex.r);
     const isSelected = selectedHex === key;
-    const isHovered = hoveredHex === key;
     const hasConstruction = !!hex.constructionSite;
     const progress = hasConstruction ? getConstructionProgress(hex.constructionSite!) : 0;
     const buildingColor = hex.buildingId ? (BUILDING_COLORS[hex.buildingId] || '#666') : null;
     const efficiency = hex.flowState?.efficiency ?? 0;
     const effColor = efficiency >= 0.9 ? '#4caf50' : efficiency >= 0.5 ? '#ffa726' : '#ef5350';
-    const displayId = hasConstruction ? hex.constructionSite!.targetBuildingId : hex.buildingId;
-    const label = displayId ? (BUILDING_LABELS[displayId] || '???') : null;
     const isInCluster = hex.buildingId && !hex.constructionSite && clusterInfo.labelHex.has(key) && clusterInfo.labelHex.get(key) !== key;
     const isLabelHex = hex.buildingId && !hex.constructionSite && clusterInfo.labelHex.get(key) === key;
     const inCluster = isInCluster || isLabelHex;
     const hasBuilding = !!hex.buildingId && !hasConstruction;
-
-    // Determine default border style
-    let stroke = '#ffffff12';
-    let strokeWidth = 0.5;
-    if (buildingColor && !hasConstruction) {
-      stroke = buildingColor;
-      strokeWidth = 1.2;
-    } else if (hasConstruction) {
-      stroke = '#d4a017';
-      strokeWidth = 1;
-    }
-
+    const IconComponent = hex.buildingId ? BuildingIcons[hex.buildingId] : null;
     return (
       <g key={`o-${key}`} transform={`translate(${x}, ${y})`} className="pointer-events-none">
-        {/* Selection glow */}
-        {isSelected && <polygon points={hexCornersStr} fill="none" stroke="#fbbf24" strokeWidth={4} opacity={0.35} />}
-        {/* Hover glow */}
-        {isHovered && !isSelected && <polygon points={hexCornersStr} fill="none" stroke="#ffffffd0" strokeWidth={2} />}
-        {/* Per-edge borders */}
+        {isSelected && <polygon points={hexCornersStr} fill="none" stroke="#fbbf24" strokeWidth={3} opacity={0.8} />}
         {hexCorners.map((corner, i) => {
           const next = hexCorners[(i + 1) % 6];
           const isInternal = clusterInfo.sameTypeEdges.has(`${key}|${i}`);
-          if (isInternal && !isSelected) return null;
-          if (isSelected) {
-            return <line key={i} x1={corner.x} y1={corner.y} x2={next.x} y2={next.y}
-              stroke="#fbbf24" strokeWidth={2} />;
-          }
-          // External cluster edge: bright border to distinguish from terrain
-          const isExternalCluster = inCluster && !isInternal;
-          return <line key={i} x1={corner.x} y1={corner.y} x2={next.x} y2={next.y}
-            stroke={isExternalCluster ? '#ffffffb0' : stroke}
-            strokeWidth={isExternalCluster ? 1.5 : strokeWidth}
-            strokeDasharray={hasConstruction ? '3,2' : undefined} />;
+          if (isInternal) return null;
+          if (hasBuilding) return <line key={i} x1={corner.x} y1={corner.y} x2={next.x} y2={next.y} stroke={buildingColor || '#fff'} strokeWidth={1.5} opacity={0.6} />;
+          return null;
         })}
-        {/* Operating building — efficiency ring + label */}
-        {hasBuilding && (
-          <>
-            {!isInCluster && (
-              <circle cx={0} cy={0} r={HEX_SIZE * 0.52} fill="none" stroke={effColor} strokeWidth={1.5} opacity={0.55} />
-            )}
-            {isLabelHex && (
-              <text y={4} textAnchor="middle" className="select-none" style={{ fontSize: '9.5px', fontWeight: 800, fill: '#fff', letterSpacing: '0.3px' }}>
-                {label}
-              </text>
-            )}
-          </>
+        {hasConstruction && <polygon points={hexCornersStr} fill="none" stroke="#d4a017" strokeWidth={1} strokeDasharray="3,2" />}
+        {hasBuilding && IconComponent && isLabelHex && <g opacity={inCluster ? 1 : 0.9}><IconComponent color={buildingColor!} size={HEX_SIZE * 1.1} /></g>}
+        {hasBuilding && efficiency < 0.99 && <circle cx={HEX_SIZE * 0.6} cy={-HEX_SIZE * 0.6} r={3} fill={effColor} stroke="#000" strokeWidth={0.5} />}
+        {hex.paused && hasBuilding && (
+          <g transform={`translate(${-HEX_SIZE * 0.55}, ${-HEX_SIZE * 0.55})`}>
+            <rect x={-2.5} y={-3.5} width={2} height={7} fill="#ef4444" rx={0.5} />
+            <rect x={0.5} y={-3.5} width={2} height={7} fill="#ef4444" rx={0.5} />
+          </g>
         )}
-        {/* Construction site */}
-        {hasConstruction && (
-          <>
-            <rect x={-HEX_SIZE * 0.55} y={HEX_SIZE * 0.22} width={HEX_SIZE * 1.1} height={2.5} fill="#1a1a1a" rx={1.25} />
-            <rect x={-HEX_SIZE * 0.55} y={HEX_SIZE * 0.22} width={HEX_SIZE * 1.1 * progress} height={2.5} fill="#eab308" rx={1.25} />
-            <text y={2} textAnchor="middle" className="select-none" style={{ fontSize: '7px', fontWeight: 700, fill: '#fde68a' }}>
-              {label}
-            </text>
-          </>
-        )}
+        {hasConstruction && <><rect x={-HEX_SIZE * 0.5} y={HEX_SIZE * 0.3} width={HEX_SIZE} height={3} fill="#1a1a1a" rx={1.5} /><rect x={-HEX_SIZE * 0.5} y={HEX_SIZE * 0.3} width={HEX_SIZE * progress} height={3} fill="#eab308" rx={1.5} /></>}
       </g>
     );
+  };
+
+  const getHexPixel = (q: number, r: number) => {
+    const { x: raw_x, y: raw_y } = pointyHexToPixel(q, r, HEX_SIZE);
+    const bx = raw_x * Math.cos(BUILDING_ROT_ANGLE) - raw_y * Math.sin(BUILDING_ROT_ANGLE) + BUILDING_OFFSET_X;
+    const by = raw_x * Math.sin(BUILDING_ROT_ANGLE) + raw_y * Math.cos(BUILDING_ROT_ANGLE) + BUILDING_OFFSET_Y;
+    return { x: bx, y: by };
+  };
+
+  const renderInfrastructureEdges = () => {
+    const elements: React.ReactNode[] = [];
+    for (const [ek, edge] of Object.entries(gameState.infraEdges)) {
+      const [a, b] = parseEdgeKey(ek);
+      const pa = getHexPixel(a.q, a.r);
+      const pb = getHexPixel(b.q, b.r);
+      // Render transport layer first
+      if (edge.transport === 'canal') {
+        elements.push(<g key={`${ek}-t`} className="pointer-events-none"><line x1={pa.x} y1={pa.y} x2={pb.x} y2={pb.y} stroke="#0f1d2a" strokeWidth={6} strokeLinecap="round" opacity={0.7} /><line x1={pa.x} y1={pa.y} x2={pb.x} y2={pb.y} stroke="#1a2634" strokeWidth={2.5} strokeLinecap="round" /></g>);
+      } else if (edge.transport === 'rail') {
+        const dx = pb.x - pa.x, dy = pb.y - pa.y;
+        const perpX = -dy, perpY = dx;
+        const len = Math.sqrt(perpX * perpX + perpY * perpY);
+        const off = len > 0 ? 2.5 / len : 0;
+        elements.push(<g key={`${ek}-t`} className="pointer-events-none"><line x1={pa.x} y1={pa.y} x2={pb.x} y2={pb.y} stroke="#3e2723" strokeWidth={6} strokeLinecap="round" opacity={0.5} /><line x1={pa.x + perpX * off} y1={pa.y + perpY * off} x2={pb.x + perpX * off} y2={pb.y + perpY * off} stroke="#8d6e63" strokeWidth={1.5} strokeLinecap="round" /><line x1={pa.x - perpX * off} y1={pa.y - perpY * off} x2={pb.x - perpX * off} y2={pb.y - perpY * off} stroke="#8d6e63" strokeWidth={1.5} strokeLinecap="round" /><line x1={pa.x} y1={pa.y} x2={pb.x} y2={pb.y} stroke="#a1887f" strokeWidth={0.5} strokeDasharray="2,4" /></g>);
+      } else if (edge.transport === 'road') {
+        elements.push(<g key={`${ek}-t`} className="pointer-events-none"><line x1={pa.x} y1={pa.y} x2={pb.x} y2={pb.y} stroke="#000000" strokeWidth={4} strokeLinecap="round" opacity={0.6} /><line x1={pa.x} y1={pa.y} x2={pb.x} y2={pb.y} stroke="#777" strokeWidth={2} strokeDasharray="3,3" /></g>);
+      }
+      // Render power layer on top
+      if (edge.power === 'power_line') {
+        elements.push(<g key={`${ek}-p`} className="pointer-events-none"><line x1={pa.x} y1={pa.y} x2={pb.x} y2={pb.y} stroke="#854d0e" strokeWidth={1.5} strokeLinecap="round" opacity={0.6} /><line x1={pa.x} y1={pa.y} x2={pb.x} y2={pb.y} stroke="#eab308" strokeWidth={1} strokeDasharray="4,3" /></g>);
+      } else if (edge.power === 'hv_line') {
+        elements.push(<g key={`${ek}-p`} className="pointer-events-none"><line x1={pa.x} y1={pa.y} x2={pb.x} y2={pb.y} stroke="#854d0e" strokeWidth={2.5} strokeLinecap="round" opacity={0.6} /><line x1={pa.x} y1={pa.y} x2={pb.x} y2={pb.y} stroke="#facc15" strokeWidth={1.5} strokeLinecap="round" /></g>);
+      }
+    }
+    for (const site of gameState.infraConstructionSites) {
+      const pa = getHexPixel(site.hexA.q, site.hexA.r);
+      const pb = getHexPixel(site.hexB.q, site.hexB.r);
+      const progress = getEdgeConstructionProgress(site as any);
+      const midX = (pa.x + pb.x) / 2, midY = (pa.y + pb.y) / 2;
+      const color = site.targetType === 'canal' ? '#42a5f5' : site.targetType === 'rail' ? '#8d6e63' : site.targetType === 'power_line' ? '#eab308' : site.targetType === 'hv_line' ? '#facc15' : '#9e9e9e';
+      elements.push(<g key={`cs-${site.edgeKey}`} className="pointer-events-none"><line x1={pa.x} y1={pa.y} x2={pb.x} y2={pb.y} stroke={color} strokeWidth={3} strokeLinecap="round" strokeDasharray="4,4" opacity={0.35} /><rect x={midX - 8} y={midY - 1.5} width={16} height={3} fill="#111" rx={1.5} opacity={0.8} /><rect x={midX - 8} y={midY - 1.5} width={16 * progress} height={3} fill="#eab308" rx={1.5} /></g>);
+    }
+    return elements;
   };
 
   const selectedHexData = selectedHex ? gameState.grid[selectedHex] : null;
   const selectedBuilding = selectedHexData?.buildingId ? BUILDINGS[selectedHexData.buildingId] : null;
   const selectedConstruction = selectedHexData?.constructionSite;
 
-  const hasExports = Object.values(gameState.exportRate).some(v => v > 0);
-  const hasTotalExports = Object.values(gameState.totalExports).some(v => v > 0);
-
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-[#0a0e14] text-zinc-100 font-sans" style={{ color: '#e4e4e7' }}>
-      <div className="w-[340px] min-w-[340px] max-w-[340px] bg-[#111820] border-r border-[#1e2a3a] p-3 flex flex-col gap-2.5 overflow-y-auto overflow-x-hidden">
-        {/* Header */}
-        <div className="flex justify-between items-center">
-          <h1 className="text-sm font-black tracking-tight text-emerald-400" style={{ fontVariant: 'small-caps' }}>Industrializer</h1>
-          <div className="flex items-center gap-2">
-            <span className="text-[11px] font-mono text-zinc-500">Era {gameState.era}</span>
-            <button onClick={toggleNetwork} className={`p-1 rounded transition-colors ${gameState.showNetwork ? 'text-blue-300' : 'text-zinc-600 hover:text-zinc-400'}`} title="Toggle Network"><Info size={12} /></button>
-            <button onClick={resetGame} className="p-1 rounded text-zinc-600 hover:text-red-400 transition-colors" title="New Game"><Zap size={12} /></button>
-          </div>
-        </div>
+    <div className="relative w-screen h-screen overflow-hidden bg-[#05080a] text-zinc-100 font-sans selection:bg-emerald-500/30">
+      
+      {/* 1. Top Bar: Resources & Global Stats */}
+      <div className="absolute top-0 left-0 right-0 h-14 bg-[#0e1218]/90 backdrop-blur-md border-b border-white/5 flex items-center px-4 justify-between z-10 shadow-xl">
+         <div className="flex items-center gap-4 shrink-0">
+            <h1 className="text-lg font-black tracking-tight text-white flex items-center gap-2">
+               <Box className="text-emerald-500 fill-emerald-500/20" size={24} />
+               <span className="bg-gradient-to-r from-emerald-400 to-teal-400 bg-clip-text text-transparent">INDUSTRIALIZER</span>
+            </h1>
+            <div className="h-6 w-px bg-white/10 mx-2" />
+            <div className="flex gap-4 text-xs font-mono text-zinc-400">
+               <span className="flex items-center gap-1.5"><Activity size={12} className="text-blue-400"/> ERA <span className="text-white font-bold">{gameState.era}</span></span>
+               <span className="flex items-center gap-1.5"><TrendingUp size={12} className="text-emerald-400"/> TV <span className="text-white font-bold">{gameState.tradeValue.toFixed(1)}</span><span className="text-zinc-600">/tick</span></span>
+            </div>
+         </div>
+         
+         {/* Ticker-style Resources */}
+         <div 
+            className="flex items-center gap-0.5 overflow-x-auto no-scrollbar mx-4 cursor-pointer hover:bg-white/5 px-1 py-1 rounded-lg transition-colors flex-wrap"
+            onClick={() => setShowResourceLedger(true)}
+            title="Open Resource Ledger"
+         >
+            {ALL_RESOURCES.map(res => {
+               const realized = gameState.flowSummary.realized[res] || 0;
+               const lossShort = gameState.flowSummary.lostToShortage[res] || 0;
+               const potDem = gameState.flowSummary.potentialDemand[res] || 0;
 
-        {/* Resource Flows — compact rows with key */}
-        <div className="space-y-px">
-          <div className="flex items-center gap-1.5 px-1.5 py-[2px] text-[11px] text-zinc-600">
-            <span className="w-1.5" />
-            <span className="w-[58px]">resource</span>
-            <span className="flex-1 text-center">produced / potential</span>
-            <span className="w-[42px] text-right">net</span>
-          </div>
-          {ALL_RESOURCES.map(res => {
-            const potential = gameState.flowSummary.potential[res] || 0;
-            const realized = gameState.flowSummary.realized[res] || 0;
-            const consumed = gameState.flowSummary.consumed[res] || 0;
-            const net = realized - consumed;
-            const hasActivity = potential > 0 || consumed > 0;
-            if (!hasActivity) return null;
-            const resColor = RESOURCE_COLORS[res] || '#888';
-            const barMax = Math.max(potential, consumed, 0.1);
-            const realizedPct = Math.min(100, (realized / barMax) * 100);
+               // Show unmet demand if buildings are short, otherwise production headroom
+               const net = lossShort > 0 ? -lossShort : realized - potDem;
 
-            return (
-              <div key={res} className="flex items-center gap-1.5 px-1.5 py-[3px] rounded hover:bg-[#1a2332]/50">
-                <div className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ backgroundColor: resColor }} />
-                <span className="text-[11px] text-zinc-500 w-[58px] truncate uppercase">{res.replace('_', ' ')}</span>
-                <div className="flex-1 h-[4px] bg-[#0d1520] rounded-full overflow-hidden">
-                  <div className="h-full rounded-full" style={{ width: `${realizedPct}%`, backgroundColor: resColor, opacity: 0.7 }} />
-                </div>
-                <span className={`text-[11px] font-mono w-[42px] text-right font-bold ${net > 0.01 ? 'text-emerald-400' : net < -0.01 ? 'text-rose-400' : 'text-zinc-600'}`}>
-                  {net > 0 ? '+' : ''}{net.toFixed(1)}
-                </span>
-              </div>
-            );
-          })}
-        </div>
-
-        {/* Era Progress */}
-        {gameState.era < 6 && ERA_MILESTONES[gameState.era + 1] && (
-          <div className="bg-[#141c28] rounded-md p-2 space-y-1">
-            <span className="text-[11px] text-zinc-500 font-bold">Era {gameState.era + 1}: {ERA_MILESTONES[gameState.era + 1].label}</span>
-            {Object.entries(ERA_MILESTONES[gameState.era + 1].requirements).map(([res, needed]) => {
-              const current = gameState.totalExports[res] || 0;
-              const pct = Math.min(1, current / (needed as number));
-              const complete = pct >= 1;
-              const resColor = RESOURCE_COLORS[res] || '#888';
-              return (
-                <div key={res} className="flex items-center gap-1.5 text-[11px]">
-                  <div className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ backgroundColor: resColor }} />
-                  <div className="flex-1 h-[4px] bg-[#0d1520] rounded-full overflow-hidden">
-                    <div className="h-full rounded-full transition-all duration-500" style={{ width: `${pct * 100}%`, backgroundColor: complete ? '#4caf50' : resColor }} />
+               if (realized <= 0 && potDem <= 0) return null;
+               const color = RESOURCE_COLORS[res];
+               return (
+                  <div key={res} className="flex items-center gap-0.5 min-w-max px-1 py-0.5 rounded" title={res.replace('_', ' ')}>
+                     <div className="w-4 h-4 flex items-center justify-center">
+                        <svg width="15" height="15" viewBox="-12 -12 24 24">
+                           {ResourceIcons[res] && React.createElement(ResourceIcons[res], { color, size: 15 })}
+                        </svg>
+                     </div>
+                     <span className={`text-[10px] font-mono font-bold ${net > 0 ? 'text-emerald-400' : net < 0 ? 'text-rose-400' : 'text-zinc-300'}`}>
+                        {net > 0 ? '+' : ''}{net.toFixed(1)}
+                     </span>
                   </div>
-                  <span className={`font-mono w-[60px] text-right ${complete ? 'text-emerald-400' : 'text-zinc-500'}`}>
-                    {Math.floor(current)}/{needed}
-                  </span>
-                </div>
-              );
+               )
             })}
-          </div>
-        )}
+         </div>
 
-        {/* Bonus Zones — compact */}
-        <div className="space-y-1">
-          {placingZoneType && (
-            <div className="text-[11px] text-amber-300 bg-amber-900/20 border border-amber-800/40 rounded px-2 py-1">
-              Click hex to place... (Esc cancel)
-            </div>
-          )}
-          {/* Placed zones */}
-          {gameState.zones.map(zone => (
-            <div key={zone.id} className="flex items-center gap-1.5 bg-[#141c28] rounded px-2 py-1">
-              <div className="w-2 h-2 rounded-sm flex-shrink-0" style={{ backgroundColor: ZONE_TYPES[zone.type].color, boxShadow: `0 0 4px ${ZONE_TYPES[zone.type].color}60` }} />
-              <span className="text-[11px] font-bold flex-1 text-zinc-300">{ZONE_TYPES[zone.type].name}</span>
-              <button onClick={() => removeZone(zone.id)} className="text-[11px] text-zinc-600 hover:text-red-400 transition-colors">x</button>
-            </div>
-          ))}
-          {/* Zone buttons — grid of small buttons */}
-          <div className="flex flex-wrap gap-1">
-            {(Object.entries(ZONE_TYPES) as [ZoneType, typeof ZONE_TYPES[ZoneType]][]).map(([zt, info]) => {
-              const count = gameState.zones.filter(z => z.type === zt).length;
-              const atLimit = count >= MAX_ZONES_PER_TYPE;
-              const isActive = placingZoneType === zt;
-              return (
-                <button
-                  key={zt}
-                  onClick={() => setPlacingZoneType(isActive ? null : zt)}
-                  disabled={atLimit && !isActive}
-                  title={`${info.name} — ${info.description} (${count}/${MAX_ZONES_PER_TYPE})`}
-                  className={`flex items-center gap-1 px-2 py-1 rounded text-[11px] font-bold transition-colors border ${
-                    isActive
-                      ? 'border-white/30 bg-[#243040]'
-                      : atLimit
-                        ? 'border-transparent opacity-30 cursor-not-allowed bg-[#141c28]'
-                        : 'border-transparent bg-[#141c28] hover:bg-[#1e2a3a] cursor-pointer'
-                  }`}
-                >
-                  <div className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: info.color, boxShadow: `0 0 3px ${info.color}80` }} />
-                  <span className="text-zinc-400">{info.name.split(' ')[0]}</span>
-                  <span className="text-zinc-600">{count}/{MAX_ZONES_PER_TYPE}</span>
-                </button>
-              );
-            })}
-          </div>
-        </div>
+         <div className="flex gap-2 shrink-0">
+            <button onClick={() => setGamePaused(p => !p)} className={`p-2 rounded-lg transition-all ${gamePaused ? 'bg-amber-500/20 text-amber-400' : 'hover:bg-white/5 text-zinc-500'}`}>{gamePaused ? <Play size={18} /> : <Pause size={18} />}</button>
+            <button onClick={resetGame} className="p-2 rounded-lg hover:bg-white/5 text-zinc-500 hover:text-red-400 transition-all"><Settings size={18} /></button>
+         </div>
+      </div>
 
-        {/* Infra placement mode banner */}
-        {infraPlacementMode && (
-          <div className="text-[11px] text-amber-300 bg-amber-900/20 border border-amber-800/40 rounded px-2 py-1">
-            Click adjacent hex for {infraPlacementMode.type}... (Esc)
-          </div>
-        )}
-
-        {/* Hex Details */}
-        {selectedHex && selectedHexData && (
-          <div className="space-y-1.5 pt-1.5 border-t border-[#1e2a3a]">
-            {/* Hex header */}
-            <div className="flex justify-between items-center px-1">
-              <span className="text-[11px] font-bold text-zinc-400 capitalize">{getAssociatedTerrains(selectedHexData.q, selectedHexData.r).join('/')}</span>
-              <span className="text-[11px] font-mono text-zinc-600">{selectedHex}</span>
-            </div>
-
-            {/* Construction site */}
-            {selectedConstruction && (
-              <div className="bg-amber-900/15 border border-amber-700/30 rounded-md p-2 space-y-1.5">
-                <div className="flex justify-between items-center">
-                  <span className="text-[11px] font-bold text-amber-200">
-                    {selectedConstruction.isUpgrade ? 'Upgrading:' : 'Building:'} {BUILDINGS[selectedConstruction.targetBuildingId]?.name || '???'}
-                  </span>
-                  <span className="text-[11px] font-mono text-amber-300">{Math.floor(getConstructionProgress(selectedConstruction) * 100)}%</span>
-                </div>
-                <div className="w-full h-1.5 bg-[#0d1520] rounded-full overflow-hidden">
-                  <div className="h-full bg-amber-500 rounded-full transition-all duration-500" style={{ width: `${getConstructionProgress(selectedConstruction) * 100}%` }} />
-                </div>
-                {Object.entries(selectedConstruction.totalCost).map(([res, needed]) => {
-                  const delivered = selectedConstruction.delivered[res] || 0;
-                  const pct = Math.min(1, delivered / needed);
-                  const resColor = RESOURCE_COLORS[res] || '#888';
-                  return (
-                    <div key={res} className="flex items-center gap-1.5 text-[11px]">
-                      <div className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ backgroundColor: resColor }} />
-                      <span className="capitalize text-zinc-500 w-[58px] truncate">{res.replace('_', ' ')}</span>
-                      <div className="flex-1 h-[4px] bg-[#0d1520] rounded-full overflow-hidden">
-                        <div className="h-full rounded-full" style={{ width: `${pct * 100}%`, backgroundColor: resColor, opacity: 0.7 }} />
-                      </div>
-                      <span className="text-zinc-500 font-mono text-right">{delivered.toFixed(0)}/{needed}</span>
-                    </div>
-                  );
-                })}
-                <button onClick={demolishBuilding} className="w-full py-1 rounded text-center text-[11px] text-zinc-500 hover:text-red-400 bg-[#0d1520] hover:bg-red-900/20 transition-colors font-bold">Cancel</button>
+      {/* 2. Floating Sidebar */}
+      <div className="absolute top-16 left-4 bottom-4 w-[360px] flex flex-col gap-3 pointer-events-none z-20">
+         
+         {/* Objective Card */}
+         {ERA_MILESTONES[gameState.era + 1] && (() => {
+           const milestone = ERA_MILESTONES[gameState.era + 1];
+           return (
+           <div className="glass-panel rounded-xl p-4 pointer-events-auto">
+              <div className="flex justify-between items-center mb-3">
+                 <span className="text-xs font-bold text-zinc-400 uppercase tracking-wider flex items-center gap-2">
+                    <TrendingUp size={14} className="text-emerald-500" /> Current Objective
+                 </span>
+                 <span className="text-[10px] bg-emerald-500/10 text-emerald-400 px-2 py-0.5 rounded border border-emerald-500/20 font-bold uppercase">{milestone.label}</span>
               </div>
+              <div className="space-y-2">
+                 {milestone.type === 'cumulative' && milestone.requirements && Object.entries(milestone.requirements).map(([res, needed]) => {
+                    const current = gameState.totalExports[res] || 0;
+                    const pct = Math.min(1, current / (needed as number));
+                    const resColor = RESOURCE_COLORS[res as ResourceType] || '#888';
+                    return (
+                       <div key={res} className="space-y-1.5">
+                          <div className="flex justify-between items-center text-xs font-medium text-zinc-300">
+                             <div className="flex items-center gap-2">
+                                <svg width="16" height="16" viewBox="-12 -12 24 24">
+                                   {ResourceIcons[res] && React.createElement(ResourceIcons[res], { color: resColor, size: 16 })}
+                                </svg>
+                                <span className="capitalize text-[11px] font-bold">{res.replace('_', ' ')}</span>
+                             </div>
+                             <span className="font-mono text-zinc-400 text-[11px]">{Math.floor(current)} <span className="text-zinc-700">/</span> {needed}</span>
+                          </div>
+                          <div className="h-2 bg-black/40 rounded-full overflow-hidden border border-white/5">
+                             <div className="h-full transition-all duration-500" style={{ width: `${pct * 100}%`, backgroundColor: resColor }} />
+                          </div>
+                       </div>
+                    )
+                 })}
+                 {milestone.type === 'rate' && milestone.tradeValueTarget && (() => {
+                    const pct = Math.min(1, gameState.tradeValue / milestone.tradeValueTarget);
+                    return (
+                       <div className="space-y-1.5">
+                          <div className="flex justify-between items-center text-xs font-medium text-zinc-300">
+                             <div className="flex items-center gap-2">
+                                <TrendingUp size={14} className="text-emerald-400" />
+                                <span className="text-[11px] font-bold">Trade Value / tick</span>
+                             </div>
+                             <span className="font-mono text-zinc-400 text-[11px]">{gameState.tradeValue.toFixed(1)} <span className="text-zinc-700">/</span> {milestone.tradeValueTarget}</span>
+                          </div>
+                          <div className="h-2 bg-black/40 rounded-full overflow-hidden border border-white/5">
+                             <div className="h-full transition-all duration-500 bg-emerald-500" style={{ width: `${pct * 100}%` }} />
+                          </div>
+                       </div>
+                    );
+                 })()}
+              </div>
+           </div>
+           );
+         })()}
+
+         {/* Main Context Panel */}
+         <div className="glass-panel rounded-xl flex-1 flex flex-col overflow-hidden pointer-events-auto shadow-2xl">
+            {selectedHex && selectedHexData ? (
+               <>
+                  <div className="p-4 border-b border-white/5 bg-white/[0.02]">
+                     <div className="flex justify-between items-start">
+                        <div>
+                           <div className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest mb-1">Selected Hex</div>
+                           <div className="text-sm font-bold text-white flex items-center gap-2">
+                              {selectedBuilding ? selectedBuilding.name : selectedConstruction ? 'Construction Site' : 'Empty Terrain'}
+                              {selectedHexData.prioritized && <Zap size={12} className="text-amber-400 fill-amber-400" />}
+                           </div>
+                           <div className="text-xs text-zinc-500 mt-0.5 capitalize">{getAssociatedTerrains(selectedHexData.q, selectedHexData.r).join(', ')} • {selectedHex}</div>
+                        </div>
+                        <button onClick={() => setSelectedHex(null)} className="p-1 hover:bg-white/10 rounded text-zinc-500 hover:text-white"><X size={16}/></button>
+                     </div>
+                  </div>
+
+                  <div className="flex-1 overflow-y-auto p-4 scrollbar-thin">
+                     {/* INSPECT MODE */}
+                     {selectedBuilding && !selectedConstruction && (
+                        <div className="space-y-6">
+                           
+                           {/* Infrastructure Row (At the top for consistency) */}
+                           <div className="flex gap-2">
+                              {(['road', 'rail', 'canal', 'power_line', 'hv_line'] as InfrastructureType[]).filter(type => gameState.era >= INFRA_UNLOCK_ERA[type]).map(type => {
+                                 const costs = INFRASTRUCTURE_COSTS[type];
+                                 const isFree = Object.keys(costs).length === 0;
+                                 return (
+                                    <button
+                                       key={type}
+                                       onClick={() => startInfraPlacement(type)}
+                                       className={`flex-1 py-3 rounded-lg border border-white/10 bg-white/5 hover:bg-white/10 transition-all flex flex-col items-center justify-center gap-1 disabled:opacity-30 disabled:cursor-not-allowed group relative`}
+                                    >
+                                       {type === 'road' && <div className="w-6 h-1 bg-zinc-400 rounded-full" />}
+                                       {type === 'rail' && <div className="w-6 h-1 bg-amber-700 border-t border-b border-dashed border-amber-900" />}
+                                       {type === 'canal' && <div className="w-6 h-1 bg-blue-500 opacity-60 rounded-full" />}
+                                       {type === 'power_line' && <div className="w-6 h-1 bg-yellow-400 rounded-full" />}
+                                       {type === 'hv_line' && <div className="w-6 h-1 bg-yellow-300 rounded-full shadow-[0_0_4px_#facc15]" />}
+                                       <span className="text-[10px] font-black uppercase text-zinc-400 tracking-wider">{{ road: 'Road', rail: 'Rail', canal: 'Canal', power_line: 'Power', hv_line: 'HV' }[type]}</span>
+                                       <div className="flex flex-wrap justify-center gap-2 mt-1">
+                                          {isFree ? (
+                                             <span className="text-[10px] text-emerald-500 font-bold uppercase">Free</span>
+                                          ) : (
+                                             Object.entries(costs).map(([res, amt]) => (
+                                                <div key={res} className="flex items-center gap-1 text-[11px] font-bold text-zinc-300">
+                                                   <svg width="14" height="14" viewBox="-12 -12 24 24">
+                                                      {ResourceIcons[res] && React.createElement(ResourceIcons[res], { color: RESOURCE_COLORS[res as ResourceType] || '#fff', size: 14 })}
+                                                   </svg>
+                                                   <span>{amt}</span>
+                                                </div>
+                                             ))
+                                          )}
+                                       </div>
+                                    </button>
+                                 );
+                              })}
+                           </div>
+
+                           <div className="flex justify-center py-4 bg-gradient-to-b from-white/5 to-transparent rounded-lg border border-white/5">
+                              {BuildingIcons[selectedBuilding.id] && (
+                                 <svg width="64" height="64" viewBox="-12 -12 24 24">
+                                    {React.createElement(BuildingIcons[selectedBuilding.id], { color: BUILDING_COLORS[selectedBuilding.id], size: 24 })}
+                                 </svg>
+                              )}
+                           </div>
+
+                           {/* Efficiency Gauge */}
+                           {selectedHexData.flowState && (
+                              <div className="space-y-3">
+                                 <div className="flex justify-between items-end">
+                                    <span className="text-xs font-bold text-zinc-400">Efficiency</span>
+                                    <span className={`text-xl font-black ${selectedHexData.flowState.efficiency >= 0.9 ? 'text-emerald-400' : 'text-amber-400'}`}>
+                                       {Math.round(selectedHexData.flowState.efficiency * 100)}%
+                                    </span>
+                                 </div>
+                                 <div className="h-2 bg-black/40 rounded-full overflow-hidden">
+                                    <div className={`h-full transition-all duration-500 ${selectedHexData.flowState.efficiency >= 0.9 ? 'bg-emerald-500' : 'bg-amber-500'}`} style={{ width: `${selectedHexData.flowState.efficiency * 100}%` }} />
+                                 </div>
+                                 
+                                 <div className="grid grid-cols-3 gap-2 text-[10px] text-zinc-500">
+                                    <div className="bg-white/5 p-2 rounded flex flex-col items-center">
+                                       <span className="mb-1">Cluster</span>
+                                       <span className="text-white font-bold text-sm">+{Math.round((selectedHexData.flowState.clusterBonus || 0) * 100)}%</span>
+                                    </div>
+                                    <div className="bg-white/5 p-2 rounded flex flex-col items-center">
+                                       <span className="mb-1">SC Output</span>
+                                       <span className="text-emerald-400 font-bold text-sm">+{Math.round((selectedHexData.flowState.zoneOutputBonus || 0) * 100)}%</span>
+                                    </div>
+                                    <div className="bg-white/5 p-2 rounded flex flex-col items-center">
+                                       <span className="mb-1">SC Input</span>
+                                       <span className="text-sky-400 font-bold text-sm">-{Math.round((selectedHexData.flowState.zoneInputReduction || 0) * 100)}%</span>
+                                    </div>
+                                 </div>
+                              </div>
+                           )}
+                           
+                           {/* Inputs/Outputs */}
+                           <div className="space-y-2">
+                              {selectedHexData.flowState?.inputDiagnostics.map(diag => (
+                                 <div key={diag.resource} className="flex items-center gap-2 text-xs">
+                                    <div className="w-4 h-4 flex items-center justify-center">
+                                       <svg width="14" height="14" viewBox="-12 -12 24 24">
+                                          {ResourceIcons[diag.resource] && React.createElement(ResourceIcons[diag.resource], { color: RESOURCE_COLORS[diag.resource as ResourceType] || '#fff', size: 14 })}
+                                       </svg>
+                                    </div>
+                                    <span className="flex-1 capitalize text-zinc-300">{diag.resource.replace('_', ' ')}</span>
+                                    <span className={`font-mono ${diag.satisfaction >= 1 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                       {(selectedHexData.flowState?.consumed[diag.resource] || 0).toFixed(1)}
+                                       <span className="text-zinc-600 ml-1">/ {diag.required.toFixed(1)}</span>
+                                    </span>
+                                 </div>
+                              ))}
+                              {Object.entries(selectedBuilding.outputs).map(([res]) => {
+                                 const real = selectedHexData.flowState?.realized[res] || 0;
+                                 return (
+                                    <div key={res} className="flex items-center gap-2 text-xs">
+                                       <div className="w-4 h-4 flex items-center justify-center">
+                                          <svg width="14" height="14" viewBox="-12 -12 24 24">
+                                             {ResourceIcons[res] && React.createElement(ResourceIcons[res], { color: RESOURCE_COLORS[res as ResourceType] || '#fff', size: 14 })}
+                                          </svg>
+                                       </div>
+                                       <span className="flex-1 capitalize text-zinc-300">{res.replace('_', ' ')}</span>
+                                       <span className="font-mono font-bold text-white">{real.toFixed(1)} <span className="text-zinc-600">/s</span></span>
+                                    </div>
+                                 )
+                              })}
+                           </div>
+
+                           <div className="grid grid-cols-3 gap-2 pt-4">
+                              <button onClick={togglePaused} className={`p-2 rounded font-bold text-xs transition-colors border ${selectedHexData.paused ? 'bg-red-500/20 border-red-500/50 text-red-300' : 'bg-white/5 border-transparent text-zinc-400 hover:bg-white/10'}`}>
+                                 {selectedHexData.paused ? 'Paused' : 'Pause'}
+                              </button>
+                              <button onClick={togglePriority} className={`p-2 rounded font-bold text-xs transition-colors border ${selectedHexData.prioritized ? 'bg-amber-500/20 border-amber-500/50 text-amber-300' : 'bg-white/5 border-transparent text-zinc-400 hover:bg-white/10'}`}>
+                                 {selectedHexData.prioritized ? 'Prioritized' : 'Prioritize'}
+                              </button>
+                              <button onClick={demolishBuilding} className="p-2 rounded font-bold text-xs bg-red-500/10 text-red-400 border border-transparent hover:bg-red-500/20 transition-colors">
+                                 Demolish
+                              </button>
+                              {selectedBuilding.upgradesTo && BUILDINGS[selectedBuilding.upgradesTo].unlockEra <= gameState.era && (() => {
+                                 const target = BUILDINGS[selectedBuilding.upgradesTo!];
+                                 const upgradeCost = selectedBuilding.upgradeCost || {};
+                                 return (
+                                    <div className="col-span-2 space-y-2 mt-2 pt-4 border-t border-white/5">
+                                       <div className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Available Upgrade</div>
+                                       <button onClick={upgradeBuilding} className="w-full flex flex-col items-center gap-2 p-3 rounded-xl bg-indigo-500/10 border border-indigo-500/20 hover:bg-indigo-500/20 transition-all group">
+                                          <div className="flex items-center gap-3 w-full">
+                                             <div className="w-10 h-10 rounded-lg bg-[#0a0e12] border border-white/10 flex items-center justify-center">
+                                                <svg width="24" height="24" viewBox="-12 -12 24 24">
+                                                   {BuildingIcons[target.id] && React.createElement(BuildingIcons[target.id], { color: BUILDING_COLORS[target.id], size: 24 })}
+                                                </svg>
+                                             </div>
+                                             <div className="text-left flex-1">
+                                                <div className="text-[12px] font-bold text-white group-hover:text-indigo-300 transition-colors">{target.name}</div>
+                                                <div className="text-[10px] text-zinc-500 leading-tight">{target.description}</div>
+                                             </div>
+                                          </div>
+                                          
+                                          <div className="w-full grid grid-cols-2 gap-4 pt-3 border-t border-white/10">
+                                             <div className="text-left">
+                                                <div className="text-[9px] text-zinc-500 font-black uppercase mb-1.5 tracking-wider">Upgrade Cost</div>
+                                                <div className="flex flex-wrap gap-3">
+                                                   {Object.entries(upgradeCost).length === 0 ? (
+                                                      <span className="text-[11px] text-emerald-500 font-bold uppercase tracking-tight">Free</span>
+                                                   ) : (
+                                                      Object.entries(upgradeCost).map(([res, amt]) => (
+                                                         <div key={res} className="flex items-center gap-1.5 text-[12px] font-bold text-zinc-200">
+                                                            <svg width="14" height="14" viewBox="-12 -12 24 24">
+                                                               {ResourceIcons[res] && React.createElement(ResourceIcons[res], { color: RESOURCE_COLORS[res as ResourceType] || '#fff', size: 14 })}
+                                                            </svg>
+                                                            {amt}
+                                                         </div>
+                                                      ))
+                                                   )}
+                                                </div>
+                                             </div>
+                                             <div className="text-left">
+                                                <div className="text-[9px] text-zinc-500 font-black uppercase mb-1.5 tracking-wider">Consumption</div>
+                                                <div className="flex flex-wrap gap-3">
+                                                   {Object.entries(target.inputs).map(([res, amt]) => (
+                                                      <div key={res} className="flex items-center gap-1.5 text-[12px] font-bold text-zinc-200">
+                                                         <svg width="14" height="14" viewBox="-12 -12 24 24">
+                                                            {ResourceIcons[res] && React.createElement(ResourceIcons[res], { color: RESOURCE_COLORS[res as ResourceType] || '#fff', size: 14 })}
+                                                         </svg>
+                                                         {amt}
+                                                      </div>
+                                                   ))}
+                                                </div>
+                                             </div>
+                                             {Object.keys(target.outputs).length > 0 && (
+                                                <div className="text-left col-span-2 pt-2 border-t border-white/5">
+                                                   <div className="text-[9px] text-emerald-600 font-black uppercase mb-1.5 tracking-wider">Production</div>
+                                                   <div className="flex flex-wrap gap-3">
+                                                      {Object.entries(target.outputs).map(([res, amt]) => (
+                                                         <div key={res} className="flex items-center gap-1.5 text-[12px] font-bold text-emerald-400/80">
+                                                            <svg width="14" height="14" viewBox="-12 -12 24 24">
+                                                               {ResourceIcons[res] && React.createElement(ResourceIcons[res], { color: RESOURCE_COLORS[res as ResourceType] || '#fff', size: 14 })}
+                                                            </svg>
+                                                            {amt}
+                                                         </div>
+                                                      ))}
+                                                   </div>
+                                                </div>
+                                             )}
+                                          </div>
+                                       </button>
+                                    </div>
+                                 );
+                              })()}
+                           </div>
+
+                           {/* Infra List */}
+                           {(() => {
+                               const hexEdges = Object.entries(gameState.infraEdges).filter(([ek]) => {
+                                   const [a, b] = parseEdgeKey(ek);
+                                   return (a.q === selectedHexData.q && a.r === selectedHexData.r) ||
+                                          (b.q === selectedHexData.q && b.r === selectedHexData.r);
+                               });
+                               const hexEdgeSites = gameState.infraConstructionSites.filter(s =>
+                                   (s.hexA.q === selectedHexData.q && s.hexA.r === selectedHexData.r) ||
+                                   (s.hexB.q === selectedHexData.q && s.hexB.r === selectedHexData.r)
+                               );
+
+                               // Flatten edges into per-category entries
+                               const edgeEntries: { ek: string; type: string; category: 'transport' | 'power'; other: { q: number; r: number } }[] = [];
+                               for (const [ek, edge] of hexEdges) {
+                                   const [a, b] = parseEdgeKey(ek);
+                                   const other = (a.q === selectedHexData.q && a.r === selectedHexData.r) ? b : a;
+                                   if (edge.transport) edgeEntries.push({ ek, type: edge.transport, category: 'transport', other });
+                                   if (edge.power) edgeEntries.push({ ek, type: edge.power, category: 'power', other });
+                               }
+
+                               if (edgeEntries.length > 0 || hexEdgeSites.length > 0) {
+                                   return (
+                                       <div className="pt-4 border-t border-white/5 space-y-2">
+                                           <div className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Infrastructure</div>
+                                           <div className="space-y-1.5">
+                                               {edgeEntries.map(({ ek, type, category, other }) => (
+                                                       <div key={`${ek}-${category}`} className="flex items-center justify-between text-xs bg-white/5 px-2 py-1.5 rounded-lg border border-white/5">
+                                                           <span className="capitalize text-zinc-400 font-medium">{type.replace('_', ' ')} to {other.q},{other.r}</span>
+                                                           <button onClick={() => demolishInfraEdge(ek, category)} className="text-zinc-600 hover:text-red-400 px-1 transition-colors">×</button>
+                                                       </div>
+                                               ))}
+                                               {hexEdgeSites.map(site => {
+                                                   const other = (site.hexA.q === selectedHexData.q && site.hexA.r === selectedHexData.r) ? site.hexB : site.hexA;
+                                                   return (
+                                                       <div key={site.edgeKey} className="flex flex-col gap-1.5 bg-amber-500/5 p-2 rounded-lg border border-amber-500/10">
+                                                           <div className="flex items-center justify-between text-[10px]">
+                                                               <span className="capitalize text-amber-400 font-bold leading-tight flex-1 mr-2">Building {site.targetType.replace('_', ' ')} to {other.q},{other.r}</span>
+                                                               <button onClick={() => demolishInfraEdge(site.edgeKey, isPowerInfra(site.targetType) ? 'power' : 'transport')} className="text-zinc-500 hover:text-red-400 transition-colors text-[9px] font-bold uppercase whitespace-nowrap">Cancel</button>
+                                                           </div>
+                                                           {Object.entries(site.totalCost).map(([res, cost]) => {
+                                                               const del = site.delivered[res] || 0;
+                                                               return (
+                                                                   <div key={res} className="space-y-0.5">
+                                                                       <div className="flex justify-between text-[9px] text-zinc-400">
+                                                                           <span className="capitalize">{res.replace('_', ' ')}</span>
+                                                                           <span>{Math.floor(del)} / {cost}</span>
+                                                                       </div>
+                                                                       <div className="h-1 bg-black/40 rounded-full overflow-hidden">
+                                                                           <div className="h-full bg-amber-500 transition-all" style={{ width: `${(del / cost) * 100}%` }} />
+                                                                       </div>
+                                                                   </div>
+                                                               );
+                                                           })}
+                                                       </div>
+                                                   );
+                                               })}
+                                           </div>
+                                       </div>
+                                   );
+                               }
+                               return null;
+                           })()}
+                        </div>
+                     )}
+
+                     {/* BUILD MODE */}
+                     {!selectedBuilding && !selectedConstruction && (
+                        <div className="space-y-4">
+                           <div className="flex gap-2 mb-4">
+                              {(['road', 'rail', 'canal', 'power_line', 'hv_line'] as InfrastructureType[]).filter(type => gameState.era >= INFRA_UNLOCK_ERA[type]).map(type => {
+                                 const costs = INFRASTRUCTURE_COSTS[type];
+                                 const isFree = Object.keys(costs).length === 0;
+                                 return (
+                                    <button
+                                       key={type}
+                                       onClick={() => startInfraPlacement(type)}
+                                       className={`flex-1 py-3 rounded-lg border border-white/10 bg-white/5 hover:bg-white/10 transition-all flex flex-col items-center justify-center gap-1 disabled:opacity-30 disabled:cursor-not-allowed group relative`}
+                                    >
+                                       {type === 'road' && <div className="w-6 h-1 bg-zinc-400 rounded-full" />}
+                                       {type === 'rail' && <div className="w-6 h-1 bg-amber-700 border-t border-b border-dashed border-amber-900" />}
+                                       {type === 'canal' && <div className="w-6 h-1 bg-blue-500 opacity-60 rounded-full" />}
+                                       {type === 'power_line' && <div className="w-6 h-1 bg-yellow-400 rounded-full" />}
+                                       {type === 'hv_line' && <div className="w-6 h-1 bg-yellow-300 rounded-full shadow-[0_0_4px_#facc15]" />}
+                                       <span className="text-[10px] font-black uppercase text-zinc-400 tracking-wider">{{ road: 'Road', rail: 'Rail', canal: 'Canal', power_line: 'Power', hv_line: 'HV' }[type]}</span>
+                                       <div className="flex flex-wrap justify-center gap-2 mt-1">
+                                          {isFree ? (
+                                             <span className="text-[10px] text-emerald-500 font-bold uppercase">Free</span>
+                                          ) : (
+                                             Object.entries(costs).map(([res, amt]) => (
+                                                <div key={res} className="flex items-center gap-1 text-[11px] font-bold text-zinc-300">
+                                                   <svg width="14" height="14" viewBox="-12 -12 24 24">
+                                                      {ResourceIcons[res] && React.createElement(ResourceIcons[res], { color: RESOURCE_COLORS[res as ResourceType] || '#fff', size: 14 })}
+                                                   </svg>
+                                                   <span>{amt}</span>
+                                                </div>
+                                             ))
+                                          )}
+                                       </div>
+                                    </button>
+                                 );
+                              })}
+                           </div>
+
+                           {/* Build Tabs */}
+                           <div className="flex p-1 bg-black/40 rounded-lg mb-2">
+                              {(['Agri', 'Mine', 'Ind', 'Civic'] as const).map(tab => {
+                                 const tabColors: Record<string, string> = { Agri: '#aaddaa', Mine: '#eecfa1', Ind: '#aabccf', Civic: '#ffccbc' };
+                                 const isActive = buildTab === tab;
+                                 return (
+                                    <button
+                                       key={tab}
+                                       onClick={() => setBuildTab(tab)}
+                                       style={{ 
+                                          backgroundColor: isActive ? tabColors[tab] : undefined,
+                                          color: isActive ? '#05080a' : undefined 
+                                       }}
+                                       className={`flex-1 py-1.5 text-[10px] font-bold uppercase rounded-md transition-all flex items-center justify-center gap-1.5 ${isActive ? 'shadow-lg shadow-black/20' : 'text-zinc-500 hover:text-zinc-300'}`}
+                                    >
+                                       {!isActive && <div className="w-1.5 h-1.5 rounded-full shadow-sm" style={{ backgroundColor: tabColors[tab] }} />}
+                                       {tab}
+                                    </button>
+                                 );
+                              })}
+                           </div>
+
+                           <div className="grid grid-cols-2 gap-2">
+                              {(() => {
+                                 const groups: Record<string, string[]> = {
+                                    'Agri': ['forager', 'farm', 'industrial_farm', 'wood_camp', 'lumber_mill', 'automated_sawmill'],
+                                    'Mine': ['stone_camp', 'quarry', 'automated_quarry', 'surface_mine', 'iron_mine', 'automated_iron_mine', 'surface_coal', 'coal_mine', 'automated_coal_mine'],
+                                    'Ind': ['bloomery', 'smelter', 'workshop', 'tool_factory', 'concrete_factory', 'steel_mill', 'machine_works', 'manufactory', 'coal_power_plant', 'electric_arc_furnace', 'electric_smelter', 'electric_kiln', 'precision_works', 'automated_toolworks', 'assembly_line'],
+                                    'Civic': ['settlement', 'town', 'city', 'trade_depot', 'station', 'export_port', 'university']
+                                 };
+                                 return groups[buildTab].map(id => {
+                                    const b = BUILDINGS[id];
+                                    if (b.unlockEra > gameState.era) return null;
+                                    const requires = b.requiresTerrain;
+                                    const localTerrain = getAssociatedTerrains(selectedHexData.q, selectedHexData.r);
+                                    const hasCanal = countHexConnections(selectedHexData.q, selectedHexData.r, gameState.infraEdges, 'canal') > 0;
+                                    const canBuild = !requires || requires.some(t => localTerrain.includes(t) || (t === 'water' && hasCanal));
+                                    if (!canBuild) return null;
+
+                                    return (
+                                       <button 
+                                          key={id}
+                                          onClick={() => buildBuilding(id)}
+                                          className="glass-card flex flex-col items-center p-3 rounded-xl gap-2 text-center group relative overflow-hidden"
+                                       >
+                                          <div className="absolute inset-0 bg-gradient-to-br from-white/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />
+                                          <div className="w-10 h-10 rounded-lg bg-[#0a0e12] border border-white/10 flex items-center justify-center group-hover:scale-110 transition-transform duration-300">
+                                             {BuildingIcons[id] && (
+                                                <svg width="24" height="24" viewBox="-12 -12 24 24">
+                                                   {React.createElement(BuildingIcons[id], { color: BUILDING_COLORS[id], size: 24 })}
+                                                </svg>
+                                             )}
+                                          </div>
+                                          <div className="flex flex-col w-full">
+                                             <span className="text-[11px] font-bold text-zinc-300 group-hover:text-white leading-tight">{b.name}</span>
+                                             
+                                             {/* Costs */}
+                                             <div className="flex flex-wrap justify-center gap-x-3 gap-y-1 mt-1.5">
+                                                {Object.keys(b.cost).length === 0 ? (
+                                                   <span className="text-[10px] text-emerald-500 font-bold uppercase">Free</span>
+                                                ) : (
+                                                   Object.entries(b.cost).map(([res, amt]) => (
+                                                      <div key={res} className="flex items-center gap-1.5 text-[11px] font-bold text-zinc-300 whitespace-nowrap">
+                                                         <svg width="14" height="14" viewBox="-12 -12 24 24">
+                                                            {ResourceIcons[res] && React.createElement(ResourceIcons[res], { color: RESOURCE_COLORS[res as ResourceType] || '#fff', size: 14 })}
+                                                         </svg>
+                                                         <span>{amt} <span className="opacity-50 text-[9px] font-medium lowercase tracking-tight">{res.replace('_', ' ')}</span></span>
+                                                      </div>
+                                                   ))
+                                                )}
+                                             </div>
+
+                                             {/* Outputs (Produces) */}
+                                             {Object.keys(b.outputs).length > 0 && (
+                                                <div className="flex flex-wrap justify-center gap-x-3 gap-y-1 mt-2 pt-2 border-t border-white/5">
+                                                   <span className="text-[9px] text-emerald-600 font-black uppercase w-full mb-1 tracking-tighter">Produces</span>
+                                                   {Object.entries(b.outputs).map(([res, amt]) => (
+                                                      <div key={res} className="flex items-center gap-1.5 text-[11px] font-bold text-emerald-400/80 whitespace-nowrap">
+                                                         <svg width="14" height="14" viewBox="-12 -12 24 24">
+                                                            {ResourceIcons[res] && React.createElement(ResourceIcons[res], { color: RESOURCE_COLORS[res as ResourceType] || '#fff', size: 14 })}
+                                                         </svg>
+                                                         <span>{amt} <span className="opacity-50 text-[9px] font-medium lowercase tracking-tight">{res.replace('_', ' ')}</span></span>
+                                                      </div>
+                                                   ))}
+                                                </div>
+                                             )}
+
+                                             {/* Inputs (Consumes) */}
+                                             {Object.keys(b.inputs).length > 0 && (
+                                                <div className="flex flex-wrap justify-center gap-x-3 gap-y-1 mt-2 pt-2 border-t border-white/5">
+                                                   <span className="text-[9px] text-zinc-500 font-black uppercase w-full mb-1 tracking-tighter">Consumes</span>
+                                                   {Object.entries(b.inputs).map(([res, amt]) => (
+                                                      <div key={res} className="flex items-center gap-1.5 text-[11px] font-bold text-zinc-400 whitespace-nowrap">
+                                                         <svg width="14" height="14" viewBox="-12 -12 24 24">
+                                                            {ResourceIcons[res] && React.createElement(ResourceIcons[res], { color: RESOURCE_COLORS[res as ResourceType] || '#fff', size: 14 })}
+                                                         </svg>
+                                                         <span>{amt} <span className="opacity-50 text-[9px] font-medium lowercase tracking-tight">{res.replace('_', ' ')}</span></span>
+                                                      </div>
+                                                   ))}
+                                                </div>
+                                             )}
+                                          </div>
+                                       </button>
+                                    );
+                                 });
+                              })()}
+                           </div>
+
+                           {/* Infra List (empty hex) */}
+                           {(() => {
+                               const hexEdges = Object.entries(gameState.infraEdges).filter(([ek]) => {
+                                   const [a, b] = parseEdgeKey(ek);
+                                   return (a.q === selectedHexData.q && a.r === selectedHexData.r) ||
+                                          (b.q === selectedHexData.q && b.r === selectedHexData.r);
+                               });
+                               const hexEdgeSites = gameState.infraConstructionSites.filter(s =>
+                                   (s.hexA.q === selectedHexData.q && s.hexA.r === selectedHexData.r) ||
+                                   (s.hexB.q === selectedHexData.q && s.hexB.r === selectedHexData.r)
+                               );
+
+                               const edgeEntries: { ek: string; type: string; category: 'transport' | 'power'; other: { q: number; r: number } }[] = [];
+                               for (const [ek, edge] of hexEdges) {
+                                   const [a, b] = parseEdgeKey(ek);
+                                   const other = (a.q === selectedHexData.q && a.r === selectedHexData.r) ? b : a;
+                                   if (edge.transport) edgeEntries.push({ ek, type: edge.transport, category: 'transport', other });
+                                   if (edge.power) edgeEntries.push({ ek, type: edge.power, category: 'power', other });
+                               }
+
+                               if (edgeEntries.length > 0 || hexEdgeSites.length > 0) {
+                                   return (
+                                       <div className="pt-4 border-t border-white/5 space-y-2">
+                                           <div className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Infrastructure</div>
+                                           <div className="space-y-1.5">
+                                               {edgeEntries.map(({ ek, type, category, other }) => (
+                                                       <div key={`${ek}-${category}`} className="flex items-center justify-between text-xs bg-white/5 px-2 py-1.5 rounded-lg border border-white/5">
+                                                           <span className="capitalize text-zinc-400 font-medium">{type.replace('_', ' ')} to {other.q},{other.r}</span>
+                                                           <button onClick={() => demolishInfraEdge(ek, category)} className="text-zinc-600 hover:text-red-400 px-1 transition-colors">×</button>
+                                                       </div>
+                                               ))}
+                                               {hexEdgeSites.map(site => {
+                                                   const other = (site.hexA.q === selectedHexData.q && site.hexA.r === selectedHexData.r) ? site.hexB : site.hexA;
+                                                   return (
+                                                       <div key={site.edgeKey} className="flex flex-col gap-1.5 bg-amber-500/5 p-2 rounded-lg border border-amber-500/10">
+                                                           <div className="flex items-center justify-between text-[10px]">
+                                                               <span className="capitalize text-amber-400 font-bold leading-tight flex-1 mr-2">Building {site.targetType.replace('_', ' ')} to {other.q},{other.r}</span>
+                                                               <button onClick={() => demolishInfraEdge(site.edgeKey, isPowerInfra(site.targetType) ? 'power' : 'transport')} className="text-zinc-500 hover:text-red-400 transition-colors text-[9px] font-bold uppercase whitespace-nowrap">Cancel</button>
+                                                           </div>
+                                                           {Object.entries(site.totalCost).map(([res, cost]) => {
+                                                               const del = site.delivered[res] || 0;
+                                                               return (
+                                                                   <div key={res} className="space-y-0.5">
+                                                                       <div className="flex justify-between text-[9px] text-zinc-400">
+                                                                           <span className="capitalize">{res.replace('_', ' ')}</span>
+                                                                           <span>{Math.floor(del)} / {cost}</span>
+                                                                       </div>
+                                                                       <div className="h-1 bg-black/40 rounded-full overflow-hidden">
+                                                                           <div className="h-full bg-amber-500 transition-all" style={{ width: `${(del / cost) * 100}%` }} />
+                                                                       </div>
+                                                                   </div>
+                                                               );
+                                                           })}
+                                                       </div>
+                                                   );
+                                               })}
+                                           </div>
+                                       </div>
+                                   );
+                               }
+                               return null;
+                           })()}
+                        </div>
+                     )}
+
+                     {/* CONSTRUCTION MODE */}
+                     {selectedConstruction && (
+                        <div className="space-y-4 text-center">
+                           <div className="inline-flex p-3 rounded-full bg-amber-500/10 text-amber-500 mb-2 border border-amber-500/20">
+                              <Hammer size={24} className="animate-pulse" />
+                           </div>
+                           <div>
+                              <div className="text-sm font-bold text-white mb-1">Under Construction</div>
+                              <div className="text-xs text-zinc-400">{BUILDINGS[selectedConstruction.targetBuildingId].name}</div>
+                           </div>
+                           <div className="space-y-2 bg-black/20 p-3 rounded-lg">
+                              {Object.entries(selectedConstruction.totalCost).map(([res, cost]) => {
+                                 const del = selectedConstruction.delivered[res] || 0;
+                                 return (
+                                    <div key={res} className="space-y-1">
+                                       <div className="flex justify-between text-[10px] text-zinc-400">
+                                          <span className="capitalize">{res}</span>
+                                          <span>{Math.floor(del)} / {cost}</span>
+                                       </div>
+                                       <div className="h-1 bg-white/10 rounded-full overflow-hidden">
+                                          <div className="h-full bg-amber-500" style={{ width: `${(del/cost)*100}%` }} />
+                                       </div>
+                                    </div>
+                                 )
+                              })}
+                           </div>
+                           <button onClick={demolishBuilding} className="w-full py-2 bg-red-500/10 hover:bg-red-500/20 text-red-400 text-xs font-bold rounded">Cancel</button>
+                        </div>
+                     )}
+                  </div>
+               </>
+            ) : (
+               <div className="p-4 h-full flex flex-col items-center justify-center text-center">
+                  <div className="text-zinc-600 text-xs">Select a hex to inspect or build</div>
+               </div>
             )}
-
-            {/* Active building */}
-            {selectedBuilding && !selectedConstruction ? (
-              <div className="space-y-1.5">
-                {/* Building name + efficiency */}
-                <div className="flex items-center gap-2 px-1">
-                  <div className="w-2.5 h-2.5 rounded-sm flex-shrink-0" style={{ backgroundColor: BUILDING_COLORS[selectedBuilding.id] || '#666' }} />
-                  <span className="text-[11px] font-bold text-zinc-100 flex-1">{selectedBuilding.name}</span>
-                  <span className={`text-[11px] font-bold font-mono ${(selectedHexData.flowState?.efficiency ?? 0) >= 0.9 ? 'text-emerald-400' : (selectedHexData.flowState?.efficiency ?? 0) >= 0.5 ? 'text-amber-400' : 'text-rose-400'}`}>
-                    {Math.floor((selectedHexData.flowState?.efficiency ?? 0) * 100)}%
-                  </span>
-                </div>
-
-                {/* Inputs — compact bars */}
-                {selectedHexData.flowState && selectedHexData.flowState.inputDiagnostics.length > 0 && (
-                  <div className="bg-[#0d1520] rounded-md p-1.5 space-y-1">
-                    {selectedHexData.flowState.inputDiagnostics.map(diag => {
-                      const resColor = RESOURCE_COLORS[diag.resource] || '#888';
-                      return (
-                        <div key={diag.resource} className="flex items-center gap-1.5 text-[11px]">
-                          <div className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ backgroundColor: resColor }} />
-                          <span className="capitalize text-zinc-500 w-[58px] truncate">{diag.resource.replace('_', ' ')}</span>
-                          <div className="flex-1 h-[4px] bg-[#111820] rounded-full overflow-hidden">
-                            <div className="h-full rounded-full" style={{ width: `${diag.satisfaction * 100}%`, backgroundColor: diag.satisfaction >= 1 ? '#4caf50' : diag.satisfaction > 0 ? '#ffa726' : '#ef5350' }} />
-                          </div>
-                          <span className={`font-mono w-[28px] text-right font-bold ${diag.satisfaction >= 1 ? 'text-emerald-400' : diag.satisfaction > 0 ? 'text-amber-400' : 'text-rose-400'}`}>
-                            {Math.floor(diag.satisfaction * 100)}%
-                          </span>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-
-                {/* Outputs — compact */}
-                {selectedHexData.flowState && Object.keys(selectedHexData.flowState.potential).length > 0 && (
-                  <div className="bg-[#0d1520] rounded-md p-1.5 space-y-0.5">
-                    {Object.entries(selectedHexData.flowState.potential).map(([res, pot]) => {
-                      const real = selectedHexData.flowState!.realized[res] || 0;
-                      const resColor = RESOURCE_COLORS[res] || '#888';
-                      return (
-                        <div key={res} className="flex items-center gap-1.5 text-[11px]">
-                          <div className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ backgroundColor: resColor }} />
-                          <span className="capitalize text-zinc-500 flex-1 truncate">{res.replace('_', ' ')}</span>
-                          <span className="font-mono text-emerald-400 font-bold">{real.toFixed(1)}</span>
-                          <span className="font-mono text-zinc-600">/{pot.toFixed(1)}</span>
-                        </div>
-                      );
-                    })}
-                    {selectedHexData.flowState!.clusterBonus > 0 && (
-                      <div className="text-[11px] text-cyan-400/70 pt-0.5">+{Math.round(selectedHexData.flowState!.clusterBonus * 100)}% cluster ({selectedHexData.flowState!.clusterSize})</div>
-                    )}
-                    {selectedHexData.flowState!.zoneOutputBonus > 0 && (
-                      <div className="text-[11px] text-purple-400/70">+{Math.round(selectedHexData.flowState!.zoneOutputBonus * 100)}% zone</div>
-                    )}
-                  </div>
-                )}
-
-                {/* Export port / trade depot specifics */}
-                {(selectedBuilding.id === 'export_port' || selectedBuilding.id === 'trade_depot') && selectedHexData.flowState && (
-                  <div className="bg-[#0d1520] rounded-md p-1.5 space-y-0.5 text-[11px]">
-                    <div className="flex justify-between">
-                      <span className="text-zinc-500">Export eff.</span>
-                      <span className={`font-bold ${selectedHexData.flowState.exportEfficiency > 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                        {selectedHexData.flowState.exportEfficiency > 0 ? `${Math.round(selectedHexData.flowState.exportEfficiency * 100)}%` : 'No route'}
-                      </span>
-                    </div>
-                    {Object.entries(selectedHexData.flowState.exports).filter(([, v]) => v > 0.001).map(([res, amt]) => (
-                      <div key={res} className="flex justify-between font-mono">
-                        <span className="capitalize text-zinc-500">{res.replace('_', ' ')}</span>
-                        <span className="text-amber-400">{amt.toFixed(2)}/t</span>
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                {!selectedHexData.flowState && Object.entries(selectedBuilding.outputs).map(([res, amt]) => (
-                  <div key={res} className="flex justify-between text-[11px] px-1.5">
-                    <span className="capitalize text-zinc-400">{res.replace('_', ' ')}</span>
-                    <span className="text-emerald-400 font-bold font-mono">{amt}/s</span>
-                  </div>
-                ))}
-
-                {/* Upgrade */}
-                {selectedBuilding.upgradesTo && selectedBuilding.upgradeCost && !selectedConstruction && (() => {
-                  const upgradeTarget = BUILDINGS[selectedBuilding.upgradesTo!];
-                  const upgradeRisks = analyzeSupplyRisks(upgradeTarget.inputs, selectedBuilding.inputs, gameState.flowSummary, gameState.era);
-                  return (
-                    <button onClick={upgradeBuilding} className="w-full flex items-center gap-2 p-1.5 bg-indigo-900/25 hover:bg-indigo-800/35 rounded-md transition-colors border border-indigo-700/30 hover:border-indigo-600/50 group">
-                      <Zap size={12} className="text-indigo-400 flex-shrink-0" />
-                      <div className="flex-1 min-w-0">
-                        <span className="text-[11px] font-bold text-indigo-200">Upgrade: {upgradeTarget.name}</span>
-                        {upgradeRisks.length > 0 && (
-                          <div className="flex gap-1 text-[11px] text-amber-500/80 mt-0.5">
-                            {upgradeRisks.slice(0, 2).map(r => <span key={r.resource} className="capitalize">{r.resource.replace('_', ' ')}</span>)}
-                          </div>
-                        )}
-                      </div>
-                    </button>
-                  );
-                })()}
-
-                {/* Actions row */}
-                <div className="flex gap-1">
-                  <button onClick={togglePriority} className={`flex-1 py-1 rounded text-center text-[11px] font-bold transition-colors border ${selectedHexData.prioritized ? 'bg-amber-900/30 border-amber-700/40 text-amber-300' : 'bg-[#141c28] border-[#1e2a3a] text-zinc-500 hover:text-zinc-300'}`}>
-                    {selectedHexData.prioritized ? 'Prioritized' : 'Prioritize'}
-                  </button>
-                  <button onClick={demolishBuilding} className="flex-1 py-1 rounded text-center text-[11px] font-bold bg-[#141c28] border border-[#1e2a3a] text-zinc-500 hover:text-red-400 hover:border-red-800/40 transition-colors">
-                    Demolish
-                  </button>
-                </div>
-
-                {/* Infrastructure */}
-                {selectedHex && (() => {
-                  const conns = countHexConnections(selectedHexData.q, selectedHexData.r, gameState.infraEdges);
-                  const hexEdges = Object.entries(gameState.infraEdges).filter(([ek]) => {
-                    const [a, b] = parseEdgeKey(ek);
-                    return (a.q === selectedHexData.q && a.r === selectedHexData.r) ||
-                           (b.q === selectedHexData.q && b.r === selectedHexData.r);
-                  });
-                  const hexEdgeSites = gameState.infraConstructionSites.filter(s =>
-                    (s.hexA.q === selectedHexData.q && s.hexA.r === selectedHexData.r) ||
-                    (s.hexB.q === selectedHexData.q && s.hexB.r === selectedHexData.r)
-                  );
-                  return (hexEdges.length > 0 || hexEdgeSites.length > 0 || (conns < MAX_INFRA_CONNECTIONS && !infraPlacementMode)) ? (
-                    <div className="space-y-1 pt-1 border-t border-[#1e2a3a]">
-                      <div className="flex justify-between items-center px-1">
-                        <span className="text-[11px] uppercase text-zinc-600 font-bold">Infra</span>
-                        <span className="text-[11px] font-mono text-zinc-600">{conns}/{MAX_INFRA_CONNECTIONS}</span>
-                      </div>
-                      {hexEdges.map(([ek, edge]) => {
-                        const [a, b] = parseEdgeKey(ek);
-                        const other = (a.q === selectedHexData.q && a.r === selectedHexData.r) ? b : a;
-                        const infraColor = edge.type === 'canal' ? '#42a5f5' : edge.type === 'rail' ? '#8d6e63' : '#9e9e9e';
-                        return (
-                          <div key={ek} className="flex items-center gap-1.5 px-1.5 py-1 bg-[#0d1520] rounded text-[11px]">
-                            <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ backgroundColor: infraColor }} />
-                            <span className="capitalize text-zinc-400 flex-1">{edge.type} {other.q},{other.r}</span>
-                            <button onClick={() => demolishInfraEdge(ek)} className="text-zinc-600 hover:text-red-400 transition-colors">x</button>
-                          </div>
-                        );
-                      })}
-                      {hexEdgeSites.map(s => (
-                        <div key={s.edgeKey} className="flex items-center gap-1.5 px-1.5 py-1 bg-amber-900/10 border border-amber-800/20 rounded text-[11px]">
-                          <span className="capitalize text-amber-300/80 flex-1">{s.targetType} {Math.floor(getEdgeConstructionProgress(s) * 100)}%</span>
-                          <button onClick={() => demolishInfraEdge(s.edgeKey)} className="text-zinc-600 hover:text-red-400 transition-colors">x</button>
-                        </div>
-                      ))}
-                      {conns < MAX_INFRA_CONNECTIONS && !infraPlacementMode && (
-                        <div className="flex gap-1">
-                          <button onClick={() => startInfraPlacement('road')} className="flex-1 py-1 rounded bg-[#141c28] hover:bg-[#1e2a3a] text-[11px] font-bold text-zinc-500 hover:text-zinc-300 transition-colors">Road</button>
-                          {gameState.era >= 2 && <button onClick={() => startInfraPlacement('rail')} className="flex-1 py-1 rounded bg-[#141c28] hover:bg-[#1e2a3a] text-[11px] font-bold text-zinc-500 hover:text-zinc-300 transition-colors">Rail</button>}
-                          {gameState.era >= 2 && <button onClick={() => startInfraPlacement('canal')} className="flex-1 py-1 rounded bg-[#141c28] hover:bg-[#1e2a3a] text-[11px] font-bold text-zinc-500 hover:text-zinc-300 transition-colors">Canal</button>}
-                        </div>
-                      )}
-                    </div>
-                  ) : null;
-                })()}
-              </div>
-            ) : !selectedConstruction ? (
-              /* Empty hex — available buildings */
-              <div className="space-y-1">
-                {Object.values(BUILDINGS).filter(b => {
-                  const associatedTerrains = getAssociatedTerrains(selectedHexData.q, selectedHexData.r);
-                  return (!b.requiresTerrain || b.requiresTerrain.some(t => associatedTerrains.includes(t as any))) && b.unlockEra <= gameState.era;
-                }).map(b => {
-                  const buildRisks = analyzeSupplyRisks(b.inputs, undefined, gameState.flowSummary, gameState.era);
-                  const bColor = BUILDING_COLORS[b.id] || '#666';
-                  return (
-                    <button key={b.id} onClick={() => buildBuilding(b.id)} className="w-full flex items-center gap-2 px-2 py-1.5 bg-[#141c28] hover:bg-[#1e2a3a] border border-[#1e2a3a] hover:border-[#3a506a] rounded text-left transition-colors group">
-                      <div className="w-2 h-2 rounded-sm flex-shrink-0" style={{ backgroundColor: bColor }} />
-                      <div className="flex-1 min-w-0">
-                        <span className="text-[11px] font-bold text-zinc-200">{b.name}</span>
-                        {Object.keys(b.cost).length > 0 && (
-                          <span className="text-[11px] text-zinc-500 ml-1.5">
-                            {Object.entries(b.cost).map(([res, amt]) => `${amt} ${res.replace('_', ' ')}`).join(', ')}
-                          </span>
-                        )}
-                        {Object.keys(b.cost).length === 0 && <span className="text-[11px] text-emerald-500/70 ml-1.5">Free</span>}
-                      </div>
-                      {buildRisks.length > 0 && <span className="text-[11px] text-amber-500/70 flex-shrink-0">{'\u26a0'}</span>}
-                    </button>
-                  );
-                })}
-                {/* Infrastructure on empty hex */}
-                {(() => {
-                  const conns = countHexConnections(selectedHexData.q, selectedHexData.r, gameState.infraEdges);
-                  return conns < MAX_INFRA_CONNECTIONS && !infraPlacementMode && (
-                    <div className="flex gap-1 pt-1 border-t border-[#1e2a3a]">
-                      <button onClick={() => startInfraPlacement('road')} className="flex-1 py-1 rounded bg-[#141c28] hover:bg-[#1e2a3a] text-[11px] font-bold text-zinc-500 hover:text-zinc-300 transition-colors">Road</button>
-                      {gameState.era >= 2 && <button onClick={() => startInfraPlacement('rail')} className="flex-1 py-1 rounded bg-[#141c28] hover:bg-[#1e2a3a] text-[11px] font-bold text-zinc-500 hover:text-zinc-300 transition-colors">Rail</button>}
-                      {gameState.era >= 2 && <button onClick={() => startInfraPlacement('canal')} className="flex-1 py-1 rounded bg-[#141c28] hover:bg-[#1e2a3a] text-[11px] font-bold text-zinc-500 hover:text-zinc-300 transition-colors">Canal</button>}
-                    </div>
-                  );
-                })()}
-              </div>
-            ) : null}
-          </div>
-        )}
+         </div>
       </div>
 
-      {/* Map area */}
-      <div className="flex-1 relative overflow-hidden" style={{ background: 'radial-gradient(circle at center, #0f1922 0%, #080c12 100%)' }}>
-        <svg viewBox={`-600 -600 1200 1200`} className="absolute inset-0 w-full h-full" preserveAspectRatio="xMidYMid meet">
-          <defs>
-            <clipPath id="terrain-clip">
-              {Object.values(gameState.terrainGrid).map((hex: any) => {
-                const { x, y } = pointyHexToPixel(hex.q, hex.r, LARGE_HEX_SIZE);
-                return <polygon key={`clip-${hex.q},${hex.r}`} points={terrainCorners.map(p => `${p.x + x},${p.y + y}`).join(' ')} />;
-              })}
-            </clipPath>
-          </defs>
-          <g>
-            {Object.values(gameState.terrainGrid).map(hex => renderTerrainHex(hex as any))}
-            <g clipPath="url(#terrain-clip)">
-              {/* Zone placement preview */}
-              {placingZoneType && hoveredHex && (() => {
-                const [hq, hr] = hoveredHex.split(',').map(Number);
-                const overlap = zonesOverlap(hq, hr, gameState.zones);
-                const previewColor = overlap ? '#ff0000' : ZONE_TYPES[placingZoneType].color;
-                return getHexesInRadius(hq, hr, ZONE_RADIUS).map(h => {
-                  const { x: raw_x, y: raw_y } = pointyHexToPixel(h.q, h.r, HEX_SIZE);
-                  const bx = raw_x * Math.cos(BUILDING_ROT_ANGLE) - raw_y * Math.sin(BUILDING_ROT_ANGLE) + BUILDING_OFFSET_X;
-                  const by = raw_x * Math.sin(BUILDING_ROT_ANGLE) + raw_y * Math.cos(BUILDING_ROT_ANGLE) + BUILDING_OFFSET_Y;
-                  const corners = getHexCorners({ x: 0, y: 0 }, HEX_SIZE, 30);
-                  return (
-                    <g key={`preview-${h.q},${h.r}`} transform={`translate(${bx}, ${by})`}>
-                      <polygon
-                        points={corners.map(p => `${p.x},${p.y}`).join(' ')}
-                        fill={previewColor}
-                        fillOpacity={0.3}
-                        stroke={previewColor}
-                        strokeOpacity={0.6}
-                        strokeWidth={1}
-                        className="pointer-events-none"
-                      />
-                    </g>
-                  );
-                });
-              })()}
-              {Object.values(gameState.grid).map(hex => renderHexFill(hex))}
-              {/* Infrastructure edges layer — between fills and overlays */}
-              {renderInfrastructureEdges()}
-              {/* Infra placement highlight */}
-              {infraPlacementMode && (() => {
-                const [fq, fr] = infraPlacementMode.fromHex.split(',').map(Number);
-                const fromPixel = getHexPixel(fq, fr);
-                const neighbors = getNeighbors(fq, fr);
-                const totalEdges = Object.keys(gameState.infraEdges).length;
-                const typeColor = infraPlacementMode.type === 'canal' ? '#5dade2' : infraPlacementMode.type === 'rail' ? '#8d6e63' : '#888';
-                return neighbors.map(n => {
-                  const nk = hexKey(n.q, n.r);
-                  if (!gameState.grid[nk]) return null;
-                  const ek = getEdgeKey(fq, fr, n.q, n.r);
-                  const existingEdge = gameState.infraEdges[ek];
-                  if (existingEdge && existingEdge.type === infraPlacementMode.type) return null;
-                  const alreadyConnected = existingEdge ? 1 : 0;
-                  const toConns = countHexConnections(n.q, n.r, gameState.infraEdges);
-                  if (toConns - alreadyConnected >= MAX_INFRA_CONNECTIONS) return null;
-                  if (gameState.infraConstructionSites.some(s => s.edgeKey === ek)) return null;
-                  // Network connectivity check (canals exempt)
-                  if (infraPlacementMode.type !== 'canal' && totalEdges > 0 && !alreadyConnected) {
-                    const fromIn = countHexConnections(fq, fr, gameState.infraEdges) > 0;
-                    const toIn = countHexConnections(n.q, n.r, gameState.infraEdges) > 0;
-                    if (!fromIn && !toIn) return null;
-                  }
-                  const nPixel = getHexPixel(n.q, n.r);
-                  const corners = getHexCorners({ x: 0, y: 0 }, HEX_SIZE, 30);
-                  return (
-                    <g key={`highlight-${nk}`}>
-                      <g transform={`translate(${nPixel.x}, ${nPixel.y})`}>
-                        <polygon points={corners.map(p => `${p.x},${p.y}`).join(' ')} fill={typeColor} fillOpacity={0.25} stroke={typeColor} strokeOpacity={0.6} strokeWidth={1.5} className="pointer-events-none" />
-                      </g>
-                      <line x1={fromPixel.x} y1={fromPixel.y} x2={nPixel.x} y2={nPixel.y} stroke={typeColor} strokeWidth={3} strokeDasharray="6,4" opacity={0.5} className="pointer-events-none" />
-                    </g>
-                  );
-                });
-              })()}
-              {/* Placed zones — between infra and hex overlays */}
-              {gameState.zones.map(zone => {
-                const color = ZONE_TYPES[zone.type].color;
-                return getHexesInRadius(zone.centerQ, zone.centerR, ZONE_RADIUS).map(h => {
-                  const { x: raw_x, y: raw_y } = pointyHexToPixel(h.q, h.r, HEX_SIZE);
-                  const bx = raw_x * Math.cos(BUILDING_ROT_ANGLE) - raw_y * Math.sin(BUILDING_ROT_ANGLE) + BUILDING_OFFSET_X;
-                  const by = raw_x * Math.sin(BUILDING_ROT_ANGLE) + raw_y * Math.cos(BUILDING_ROT_ANGLE) + BUILDING_OFFSET_Y;
-                  return (
-                    <g key={`zone-${zone.id}-${h.q},${h.r}`} transform={`translate(${bx}, ${by})`}>
-                      <polygon
-                        points={hexCornersStr}
-                        fill={color}
-                        fillOpacity={0.15}
-                        stroke={color}
-                        strokeOpacity={0.55}
-                        strokeWidth={1}
-                        className="pointer-events-none"
-                      />
-                    </g>
-                  );
-                });
-              })}
-              {Object.values(gameState.grid).map(hex => renderHexOverlay(hex))}
+      {/* 3. Main Map */}
+      <div ref={mapContainerRef} className="absolute top-14 bottom-0 right-0 left-[380px] z-0">
+         <svg viewBox={mapViewBox} className="w-full h-full" preserveAspectRatio="xMidYMid meet">
+            <g>
+               {Object.values(gameState.terrainGrid).map(hex => renderTerrainHex(hex as any))}
+               <g>
+                 {Object.values(gameState.grid).map(hex => (
+                    <HexFill 
+                       key={`f-${hex.q},${hex.r}`}
+                       hex={hex}
+                       isSelected={selectedHex === hexKey(hex.q, hex.r)}
+                       isHovered={hoveredHex === hexKey(hex.q, hex.r)}
+                       onClick={() => {
+                          if (infraPlacementMode) { completeInfraPlacement(hexKey(hex.q, hex.r)); }
+                          else { setSelectedHex(hexKey(hex.q, hex.r)); }
+                       }}
+                       onMouseEnter={() => setHoveredHex(hexKey(hex.q, hex.r))}
+                       onMouseLeave={() => setHoveredHex(null)}
+                    />
+                 ))}
+                 {renderInfrastructureEdges()}
+                 {selectedHex && (() => {
+                    const selHex = gameState.grid[selectedHex];
+                    if (!selHex?.buildingId || selHex.constructionSite) return null;
+                    const radius = HUB_RADIUS[selHex.buildingId];
+                    if (radius === undefined) return null;
+                    const color = BUILDING_COLORS[selHex.buildingId] || '#ffe082';
+                    // Collect other operating hubs to determine closest-hub ownership
+                    const otherHubs: { key: string; q: number; r: number; radius: number }[] = [];
+                    for (const [k, hex] of Object.entries(gameState.grid)) {
+                       if (k === selectedHex) continue;
+                       if (!hex.buildingId || hex.constructionSite) continue;
+                       const r2 = HUB_RADIUS[hex.buildingId];
+                       if (r2 !== undefined) otherHubs.push({ key: k, q: hex.q, r: hex.r, radius: r2 });
+                    }
+                    return getHexesInRadius(selHex.q, selHex.r, radius).map(h => {
+                       const dist = hexDistance(h.q, h.r, selHex.q, selHex.r);
+                       // Check if another hub is closer (or equidistant with lower key)
+                       const claimed = otherHubs.some(oh => {
+                          const ohDist = hexDistance(h.q, h.r, oh.q, oh.r);
+                          return ohDist <= oh.radius && (ohDist < dist || (ohDist === dist && oh.key < selectedHex!));
+                       });
+                       const { x: raw_x, y: raw_y } = pointyHexToPixel(h.q, h.r, HEX_SIZE);
+                       const bx = raw_x * Math.cos(BUILDING_ROT_ANGLE) - raw_y * Math.sin(BUILDING_ROT_ANGLE) + BUILDING_OFFSET_X;
+                       const by = raw_x * Math.sin(BUILDING_ROT_ANGLE) + raw_y * Math.cos(BUILDING_ROT_ANGLE) + BUILDING_OFFSET_Y;
+                       return (
+                          <g key={`hub-${h.q},${h.r}`} transform={`translate(${bx}, ${by})`} className="pointer-events-none">
+                             <polygon points={hexCornersStr} fill={color} fillOpacity={claimed ? 0.02 : 0.06} stroke={color} strokeOpacity={claimed ? 0.1 : 0.3} strokeWidth={1} strokeDasharray={claimed ? "2,4" : "3,2"} />
+                          </g>
+                       );
+                    });
+                 })()}
+                 {infraPlacementMode && hoveredHex && (() => {
+                    const [hq, hr] = hoveredHex.split(',').map(Number);
+                    const { x: raw_x, y: raw_y } = pointyHexToPixel(hq, hr, HEX_SIZE);
+                    const bx = raw_x * Math.cos(BUILDING_ROT_ANGLE) - raw_y * Math.sin(BUILDING_ROT_ANGLE) + BUILDING_OFFSET_X;
+                    const by = raw_x * Math.sin(BUILDING_ROT_ANGLE) + raw_y * Math.cos(BUILDING_ROT_ANGLE) + BUILDING_OFFSET_Y;
+                    return (
+                       <g key={`p-${hq},${hr}`} transform={`translate(${bx}, ${by})`} className="pointer-events-none">
+                          <polygon points={hexCornersStr} fill="#ffffff" fillOpacity={0.2} stroke="#ffffff" strokeDasharray="4,2" />
+                       </g>
+                    );
+                 })()}
+                 {Object.values(gameState.grid).map(hex => {
+                    const key = hexKey(hex.q, hex.r);
+                    return (
+                       <HexOverlay 
+                          key={`o-${key}`}
+                          hex={hex}
+                          isSelected={selectedHex === key}
+                          isLabelHex={clusterInfo.labelHex.get(key) === key}
+                          isInCluster={clusterInfo.labelHex.has(key) && clusterInfo.labelHex.get(key) !== key}
+                          sameTypeEdges={clusterInfo.sameTypeEdges}
+                          efficiency={hex.flowState?.efficiency ?? 1}
+                       />
+                    )
+                 })}
+               </g>
             </g>
-          </g>
-        </svg>
-        <div className="absolute top-4 left-1/2 -translate-x-1/2 flex gap-3">
-          <div className="bg-[#111820]/90 backdrop-blur-sm border border-[#1e2a3a] px-3.5 py-1.5 rounded-full flex items-center gap-2 shadow-lg shadow-black/20" title={
-            ERA_MILESTONES[gameState.era + 1]
-              ? `Next: ${ERA_MILESTONES[gameState.era + 1].label} — export ${Object.entries(ERA_MILESTONES[gameState.era + 1].requirements).map(([r, n]) => `${n} ${r.replace('_', ' ')}`).join(' + ')}`
-              : 'Final era reached'
-          }><Zap size={12} className="text-emerald-400" /><span className="text-[11px] font-bold font-mono tracking-wide text-emerald-300">ERA {gameState.era}</span></div>
-          <div className="bg-[#111820]/90 backdrop-blur-sm border border-[#1e2a3a] px-3.5 py-1.5 rounded-full flex items-center gap-2 shadow-lg shadow-black/20"><span className="text-[11px] font-bold font-mono tracking-wide text-zinc-500">TICK {gameState.tick}</span></div>
-          {hasTotalExports && (
-            <div className="relative">
-              <button onClick={() => setShowExportPanel(p => !p)} className={`bg-[#111820]/90 backdrop-blur-sm border px-3.5 py-1.5 rounded-full flex items-center gap-2 shadow-lg shadow-black/20 cursor-pointer hover:bg-[#1a2332]/90 transition-colors ${showExportPanel ? 'border-amber-500/50' : 'border-amber-800/30'}`}>
-                <Zap size={12} className="text-amber-400" />
-                <span className="text-[11px] font-bold font-mono tracking-wide text-amber-300">
-                  EXPORTS {Object.values(gameState.totalExports).reduce((a, b) => a + b, 0).toFixed(0)}
-                </span>
-              </button>
-              {showExportPanel && (
-                <div className="absolute top-full mt-2 right-0 bg-[#111820]/95 backdrop-blur-sm border border-amber-800/30 rounded-lg shadow-xl shadow-black/40 p-3 min-w-[200px] z-10">
-                  {/* Per-tick rates */}
-                  {hasExports && (
-                    <div className="space-y-1 mb-2">
-                      <span className="text-[11px] text-zinc-500 font-bold uppercase">Per Tick</span>
-                      {Object.entries(gameState.exportRate).filter(([, r]) => r > 0).map(([res, rate]) => {
-                        const resColor = RESOURCE_COLORS[res] || '#888';
-                        return (
-                          <div key={res} className="flex items-center gap-1.5 text-[11px]">
-                            <div className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ backgroundColor: resColor }} />
-                            <span className="capitalize text-zinc-300 flex-1">{res.replace('_', ' ')}</span>
-                            <span className="font-mono text-amber-400 font-bold">{rate.toFixed(1)}</span>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                  {/* Cumulative totals */}
-                  <div className="space-y-1 border-t border-amber-800/20 pt-2">
-                    <span className="text-[11px] text-zinc-500 font-bold uppercase">Cumulative</span>
-                    {Object.entries(gameState.totalExports).filter(([, t]) => t > 0).map(([res, total]) => {
-                      const resColor = RESOURCE_COLORS[res] || '#888';
-                      return (
-                        <div key={res} className="flex items-center gap-1.5 text-[11px]">
-                          <div className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ backgroundColor: resColor }} />
-                          <span className="capitalize text-zinc-400 flex-1">{res.replace('_', ' ')}</span>
-                          <span className="font-mono text-zinc-300">{total.toFixed(0)}</span>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-        </div>
+         </svg>
       </div>
+
+      {/* Hints Overlay */}
+      <div className="absolute top-20 left-1/2 -translate-x-1/2 pointer-events-none flex flex-col items-center gap-2 z-30">
+        {infraPlacementMode && <div className="bg-blue-500/20 text-blue-300 backdrop-blur-md px-4 py-2 rounded-full text-xs font-bold border border-blue-500/30 shadow-lg">Placing {{ road: 'ROAD', rail: 'RAIL', canal: 'CANAL', power_line: 'POWER LINE', hv_line: 'HV LINE' }[infraPlacementMode.type]} (Select Target)</div>}
+      </div>
+
+      {/* Resource Ledger Modal */}
+      {showResourceLedger && (
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-8" onClick={() => setShowResourceLedger(false)}>
+           <div className="glass-panel w-full max-w-5xl flex flex-col rounded-xl overflow-hidden max-h-full shadow-2xl" onClick={e => e.stopPropagation()}>
+              <div className="p-4 border-b border-white/10 flex justify-between items-center bg-white/5">
+                 <div className="flex items-center gap-3">
+                    <Activity className="text-emerald-400" />
+                    <div>
+                       <h2 className="text-lg font-bold text-white">Resource Ledger</h2>
+                       <div className="text-xs text-zinc-400 font-mono">GLOBAL ECONOMY STATISTICS</div>
+                    </div>
+                 </div>
+                 <button onClick={() => setShowResourceLedger(false)} className="p-2 hover:bg-white/10 rounded-lg text-zinc-400 hover:text-white transition-colors"><X /></button>
+              </div>
+              <div className="flex-1 overflow-y-auto p-0">
+                 <table className="w-full text-left border-collapse">
+                    <thead className="bg-black/20 sticky top-0 backdrop-blur-md z-10">
+                       <tr className="text-[10px] font-bold text-zinc-500 uppercase tracking-wider border-b border-white/5">
+                          <th className="p-4 font-bold text-zinc-300">Resource</th>
+                          <th className="p-4 text-right">Net Capacity <span className="opacity-50 lowercase">(prod / cons)</span></th>
+                          <th className="p-4 text-right">Realized Prod.</th>
+                          <th className="p-4 text-right">Consumed</th>
+                          <th className="p-4 text-right">Losses</th>
+                          <th className="p-4 text-right">Efficiency</th>
+                          <th className="p-4 text-right">Surplus</th>
+                          <th className="p-4 text-right">Price</th>
+                          <th className="p-4 text-right">Export/t</th>
+                       </tr>
+                    </thead>
+                    <tbody className="divide-y divide-white/5 text-xs font-mono">
+                       {ALL_RESOURCES.map(res => {
+                          const pot = gameState.flowSummary.potential[res] || 0;
+                          const dem = gameState.flowSummary.potentialDemand[res] || 0;
+                          const real = gameState.flowSummary.realized[res] || 0;
+                          const cons = gameState.flowSummary.consumed[res] || 0;
+                          const lossDist = gameState.flowSummary.lostToDistance[res] || 0;
+                          const lossShort = gameState.flowSummary.lostToShortage[res] || 0;
+                          
+                          if (pot <= 0 && dem <= 0 && real <= 0) return null;
+
+                          const transferEff = real > 0.01 ? (cons / real) : 0;
+                          
+                          // Show unmet demand if buildings are short, otherwise production headroom
+                          const surplus = lossShort > 0 ? -lossShort : real - dem;
+                          
+                          const color = RESOURCE_COLORS[res];
+
+                          return (
+                             <tr key={res} className="hover:bg-white/5 transition-colors group">
+                                <td className="p-4">
+                                   <div className="flex items-center gap-3">
+                                      <div className="w-6 h-6 flex items-center justify-center">
+                                         <svg width="20" height="20" viewBox="-12 -12 24 24">
+                                            {ResourceIcons[res] && React.createElement(ResourceIcons[res], { color: color || '#fff', size: 20 })}
+                                         </svg>
+                                      </div>
+                                      <span className="font-bold text-zinc-300 capitalize text-sm font-sans">{res.replace('_', ' ')}</span>
+                                   </div>
+                                </td>
+                                <td className="p-4 text-right">
+                                   <div className="flex flex-col items-end gap-0.5">
+                                      <span className="text-zinc-300 font-bold">{pot.toFixed(1)} <span className="text-zinc-600">/</span> {dem.toFixed(1)}</span>
+                                      <div className="w-24 h-1 bg-zinc-800 rounded-full overflow-hidden flex">
+                                         <div className="h-full bg-zinc-500" style={{ width: `${Math.min(100, (pot / Math.max(pot, dem)) * 100)}%` }} />
+                                      </div>
+                                   </div>
+                                </td>
+                                <td className="p-4 text-right font-bold text-white">{real.toFixed(1)}</td>
+                                <td className="p-4 text-right text-zinc-300">{cons.toFixed(1)}</td>
+                                <td className="p-4 text-right text-rose-400">
+                                   {lossDist > 0 && <div>-{lossDist.toFixed(1)} <span className="text-[9px] text-rose-500/70">DIST</span></div>}
+                                   {lossShort > 0 && <div>-{lossShort.toFixed(1)} <span className="text-[9px] text-amber-500/70">SHORT</span></div>}
+                                   {lossDist <= 0 && lossShort <= 0 && <span className="text-zinc-600">-</span>}
+                                </td>
+                                <td className="p-4 text-right">
+                                   <div className={`font-bold ${transferEff >= 0.95 ? 'text-emerald-400' : transferEff >= 0.8 ? 'text-blue-400' : 'text-amber-400'}`}>
+                                      {Math.round(transferEff * 100)}%
+                                   </div>
+                                </td>
+                                <td className="p-4 text-right">
+                                   <span className={`font-bold ${surplus > 0.1 ? 'text-emerald-400' : surplus < -0.1 ? 'text-rose-400' : 'text-zinc-600'}`}>
+                                      {surplus > 0 ? '+' : ''}{surplus.toFixed(1)}
+                                   </span>
+                                </td>
+                                <td className="p-4 text-right">
+                                   {gameState.marketPrices[res] != null ? (
+                                      <span className="font-bold text-zinc-300">{gameState.marketPrices[res].toFixed(2)}</span>
+                                   ) : (
+                                      <span className="text-zinc-600">-</span>
+                                   )}
+                                </td>
+                                <td className="p-4 text-right">
+                                   {(gameState.exportRate[res] || 0) > 0 ? (
+                                      <span className="font-bold text-amber-400">{(gameState.exportRate[res] || 0).toFixed(2)}</span>
+                                   ) : (
+                                      <span className="text-zinc-600">-</span>
+                                   )}
+                                </td>
+                             </tr>
+                          )
+                       })}
+                    </tbody>
+                 </table>
+              </div>
+           </div>
+        </div>
+      )}
+
     </div>
   );
 };

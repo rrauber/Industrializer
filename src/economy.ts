@@ -1,16 +1,126 @@
-import { HexData, TerrainHex, TerrainType, ResourceMap, FlowSummary, BuildingFlowState, InputDiagnostic, InfrastructureType, InfrastructureEdge, InfraEdgeConstructionSite, BonusZone, ZoneType } from './types';
-import { BUILDINGS, ZONE_TYPES, ZONE_OUTPUT_BONUS, ZONE_INPUT_REDUCTION } from './constants';
-import { hexKey, getEdgeKey, getNeighbors, getHexesInRadius } from './hexUtils';
+import { HexData, TerrainHex, TerrainType, ResourceMap, FlowSummary, BuildingFlowState, InputDiagnostic, InfrastructureEdge, InfraEdgeConstructionSite, FlowPair } from './types';
+import { BUILDINGS, ZONE_TYPES, ZONE_OUTPUT_BONUS, ZONE_INPUT_REDUCTION, INFRA_STEP_COSTS, HUB_RADIUS, MARKET_CONFIG } from './constants';
+import { hexKey, getEdgeKey, getNeighbors, getHexesInRadius, countHexConnections, setEdgeType, HEX_DIRECTIONS } from './hexUtils';
 
-type PathCostFn = (start: HexData, end: HexData, grid: Record<string, HexData>) => number;
 type GetTerrainsFn = (q: number, r: number) => TerrainType[];
+type TerrainAssociations = Record<string, TerrainType[]>;
+
+// Precomputed distance map: source hex key -> (dest hex key -> path cost)
+type DistanceMap = Map<string, Map<string, number>>;
+
+function precomputeDistances(
+  sourceKeys: string[],
+  grid: Record<string, HexData>,
+  infraEdges: Record<string, InfrastructureEdge>,
+  maxCost: number = 10,
+  waterPortKeys?: Set<string>,
+  stepCostOverrides?: Partial<Record<string, number>>,
+  hubZones?: { hubKey: string; hexKeys: Set<string> }[],
+  category: 'transport' | 'power' = 'transport'
+): DistanceMap {
+  // Precompute hex-to-hub-zone lookup for free transit (spoke → hub)
+  const hexToHubZones = new Map<string, { hubKey: string; hexKeys: Set<string> }[]>();
+  // Precompute hub-center-to-zones lookup for free transit (hub → spokes)
+  const hubCenterZones = new Map<string, { hubKey: string; hexKeys: Set<string> }[]>();
+  if (hubZones) {
+    for (const zone of hubZones) {
+      for (const hk of zone.hexKeys) {
+        if (!hexToHubZones.has(hk)) hexToHubZones.set(hk, []);
+        hexToHubZones.get(hk)!.push(zone);
+      }
+      if (!hubCenterZones.has(zone.hubKey)) hubCenterZones.set(zone.hubKey, []);
+      hubCenterZones.get(zone.hubKey)!.push(zone);
+    }
+  }
+  const result: DistanceMap = new Map();
+  for (const startKey of sourceKeys) {
+    const startHex = grid[startKey];
+    if (!startHex) continue;
+    const distances = new Map<string, number>();
+    distances.set(startKey, 0);
+    const queue: { key: string, q: number, r: number, cost: number }[] = [
+      { key: startKey, q: startHex.q, r: startHex.r, cost: 0 }
+    ];
+    while (queue.length > 0) {
+      let minIdx = 0;
+      for (let i = 1; i < queue.length; i++) {
+        if (queue[i].cost < queue[minIdx].cost) minIdx = i;
+      }
+      const current = queue[minIdx];
+      queue[minIdx] = queue[queue.length - 1];
+      queue.pop();
+      if (current.cost > (distances.get(current.key) ?? Infinity)) continue;
+      // Normal hex neighbors (inlined to avoid allocation)
+      for (const d of HEX_DIRECTIONS) {
+        const nq = current.q + d.dq, nr = current.r + d.dr;
+        const nKey = hexKey(nq, nr);
+        if (!grid[nKey]) continue;
+        const ek = getEdgeKey(current.q, current.r, nq, nr);
+        const edge = infraEdges[ek];
+        const edgeType = edge ? (category === 'power' ? edge.power : edge.transport) : undefined;
+        const stepCost = edgeType
+          ? (stepCostOverrides?.[edgeType] ?? INFRA_STEP_COSTS[edgeType])
+          : 1.0;
+        const newCost = current.cost + stepCost;
+        if (newCost <= maxCost && newCost < (distances.get(nKey) ?? Infinity)) {
+          distances.set(nKey, newCost);
+          queue.push({ key: nKey, q: nq, r: nr, cost: newCost });
+        }
+      }
+      // Free port-to-port transit: water ports can reach all other water ports at 0 cost
+      if (waterPortKeys && waterPortKeys.has(current.key)) {
+        for (const portKey of waterPortKeys) {
+          if (portKey === current.key) continue;
+          const portHex = grid[portKey];
+          if (!portHex) continue;
+          if (current.cost < (distances.get(portKey) ?? Infinity)) {
+            distances.set(portKey, current.cost);
+            queue.push({ key: portKey, q: portHex.q, r: portHex.r, cost: current.cost });
+          }
+        }
+      }
+      // Hub zone star topology: spoke → hub (small cost per hop)
+      const hubsForHex = hexToHubZones.get(current.key);
+      if (hubsForHex) {
+        for (const zone of hubsForHex) {
+          const hubHex = grid[zone.hubKey];
+          if (!hubHex || zone.hubKey === current.key) continue;
+          const hopCost = current.cost + HUB_HOP_COST;
+          if (hopCost <= maxCost && hopCost < (distances.get(zone.hubKey) ?? Infinity)) {
+            distances.set(zone.hubKey, hopCost);
+            queue.push({ key: zone.hubKey, q: hubHex.q, r: hubHex.r, cost: hopCost });
+          }
+        }
+      }
+      // Hub zone star topology: hub → spokes (small cost per hop)
+      const centerZones = hubCenterZones.get(current.key);
+      if (centerZones) {
+        for (const zone of centerZones) {
+          for (const destKey of zone.hexKeys) {
+            if (destKey === current.key) continue;
+            const destHex = grid[destKey];
+            if (!destHex) continue;
+            const hopCost = current.cost + HUB_HOP_COST;
+            if (hopCost <= maxCost && hopCost < (distances.get(destKey) ?? Infinity)) {
+              distances.set(destKey, hopCost);
+              queue.push({ key: destKey, q: destHex.q, r: destHex.r, cost: hopCost });
+            }
+          }
+        }
+      }
+    }
+    result.set(startKey, distances);
+  }
+  return result;
+}
 
 interface ProducerState {
   hex: HexData;
   key: string;
   buildingId: string;
-  potential: Record<string, number>; // max output at 100% efficiency
-  remaining: Record<string, number>; // remaining capacity this iteration
+  potential: Record<string, number>; 
+  realized: Record<string, number>;
+  remaining: Record<string, number>;
   clusterBonus: number;
   clusterSize: number;
   zoneOutputBonus: number;
@@ -35,7 +145,7 @@ interface AllocPair {
 }
 
 function emptyFlowSummary(): FlowSummary {
-  return { potential: {}, realized: {}, consumed: {}, lostToDistance: {}, lostToShortage: {} };
+  return { potential: {}, potentialDemand: {}, realized: {}, consumed: {}, exportConsumed: {}, lostToDistance: {}, lostToShortage: {} };
 }
 
 function addToMap(map: ResourceMap, key: string, amount: number) {
@@ -46,83 +156,188 @@ const CONVERGENCE_ITERATIONS = 5;
 const BASE_POPULATION = 0.1;
 const CONSTRUCTION_RESERVE = 0.1; // reserve 10% of production for construction sites
 const MIN_PRODUCTION_FLOOR = 0.1; // buildings always produce at least 10% to prevent deadlocks
-
-const INFRA_STEP_COSTS: Record<InfrastructureType, number> = {
-  road: 0.5,
-  rail: 0.2,
-  canal: 0.15,
-};
+const HUB_HOP_COST = 0.05; // small cost per hop within hub zones
 
 function computeClusters(grid: Record<string, HexData>): Map<string, { size: number; bonus: number }> {
-  const visited = new Set<string>();
   const result = new Map<string, { size: number; bonus: number }>();
+  const HUB_BUILDINGS = new Set(Object.keys(HUB_RADIUS));
 
-  // First pass: find all contiguous clusters of same-type buildings
-  const clusters: string[][] = [];
+  // Collect all non-hub building types present on the map
+  const buildingTypes = new Set<string>();
+  for (const [, hex] of Object.entries(grid)) {
+    if (hex.buildingId && !HUB_BUILDINGS.has(hex.buildingId)) {
+      buildingTypes.add(hex.buildingId);
+    }
+  }
+
+  // Build upgrade compatibility: for each type, collect all higher-tier upgrades
+  // n+1 tier counts as bonus-providing to n tier, but not the reverse
+  const upgradeCompatible = new Map<string, Set<string>>();
+  for (const buildingType of buildingTypes) {
+    const compatible = new Set<string>();
+    let current = buildingType;
+    while (BUILDINGS[current]?.upgradesTo) {
+      const next = BUILDINGS[current].upgradesTo!;
+      compatible.add(next);
+      current = next;
+    }
+    upgradeCompatible.set(buildingType, compatible);
+  }
+
+  // For each building type, compute clusters including hub buildings as wildcards
+  for (const buildingType of buildingTypes) {
+    const compatible = upgradeCompatible.get(buildingType)!;
+    const visited = new Set<string>();
+    const clusters: string[][] = [];
+
+    for (const [key, hex] of Object.entries(grid)) {
+      if (visited.has(key) || hex.buildingId !== buildingType) continue;
+      const cluster: string[] = [];
+      const queue = [key];
+      visited.add(key);
+      while (queue.length > 0) {
+        const cur = queue.shift()!;
+        cluster.push(cur);
+        const curHex = grid[cur];
+        for (const n of getNeighbors(curHex.q, curHex.r)) {
+          const nk = hexKey(n.q, n.r);
+          if (visited.has(nk)) continue;
+          const nHex = grid[nk];
+          if (!nHex?.buildingId) continue;
+          if (nHex.buildingId === buildingType || HUB_BUILDINGS.has(nHex.buildingId) || compatible.has(nHex.buildingId)) {
+            visited.add(nk);
+            queue.push(nk);
+          }
+        }
+      }
+      clusters.push(cluster);
+    }
+
+    for (const cluster of clusters) {
+      const clusterSize = cluster.length;
+      if (clusterSize <= 1) {
+        const prev = result.get(cluster[0]);
+        if (!prev || prev.size < clusterSize) result.set(cluster[0], { size: 1, bonus: 0 });
+        continue;
+      }
+      const clusterSet = new Set(cluster);
+      for (const buildingKey of cluster) {
+        const distances = new Map<string, number>();
+        distances.set(buildingKey, 0);
+        const bfsQueue = [buildingKey];
+        let score = 0;
+        while (bfsQueue.length > 0) {
+          const cur = bfsQueue.shift()!;
+          const curDist = distances.get(cur)!;
+          const curHex = grid[cur];
+          for (const n of getNeighbors(curHex.q, curHex.r)) {
+            const nk = hexKey(n.q, n.r);
+            if (distances.has(nk) || !clusterSet.has(nk)) continue;
+            const nDist = curDist + 1;
+            distances.set(nk, nDist);
+            score += Math.pow(0.5, nDist - 1);
+            bfsQueue.push(nk);
+          }
+        }
+        const bonus = score >= 5 ? 1.0 : score >= 3 ? 0.5 : score >= 2 ? 0.25 : score >= 1 ? 0.1 : 0;
+        // Hub buildings can be in multiple clusters; keep the best bonus
+        const prev = result.get(buildingKey);
+        if (!prev || bonus > prev.bonus) {
+          result.set(buildingKey, { size: clusterSize, bonus });
+        }
+      }
+    }
+  }
+
+  // Ensure all buildings (including standalone hubs) have entries
   for (const [key, hex] of Object.entries(grid)) {
-    if (visited.has(key) || !hex.buildingId) continue;
-    const cluster: string[] = [];
-    const queue = [key];
-    visited.add(key);
-    while (queue.length > 0) {
-      const cur = queue.shift()!;
-      cluster.push(cur);
-      const curHex = grid[cur];
-      for (const n of getNeighbors(curHex.q, curHex.r)) {
-        const nk = hexKey(n.q, n.r);
-        if (visited.has(nk)) continue;
-        const nHex = grid[nk];
-        if (nHex?.buildingId === hex.buildingId) {
+    if (hex.buildingId && !result.has(key)) {
+      result.set(key, { size: 1, bonus: 0 });
+    }
+  }
+  return result;
+}
+
+function computeSuperclusters(grid: Record<string, HexData>): Map<string, { bonus: number; uniCount: number }> {
+  const result = new Map<string, { bonus: number; uniCount: number }>();
+  const HUB_BUILDINGS = new Set(Object.keys(HUB_RADIUS));
+
+  // Build reverse lookup: buildingId → zone type
+  const buildingToZone = new Map<string, string>();
+  for (const [zt, info] of Object.entries(ZONE_TYPES)) {
+    for (const bid of info.buildings) buildingToZone.set(bid, zt);
+  }
+
+  // For each zone type, BFS connected components
+  const zoneTypes = Object.keys(ZONE_TYPES);
+  for (const zt of zoneTypes) {
+    const visited = new Set<string>();
+    const clusters: string[][] = [];
+
+    for (const [key, hex] of Object.entries(grid)) {
+      if (visited.has(key) || !hex.buildingId || hex.constructionSite || hex.paused) continue;
+      // Must belong to this zone type, or be a wildcard (university/hub)
+      const isWildcard = hex.buildingId === 'university' || HUB_BUILDINGS.has(hex.buildingId);
+      if (!isWildcard && buildingToZone.get(hex.buildingId) !== zt) continue;
+
+      const cluster: string[] = [];
+      const queue = [key];
+      visited.add(key);
+      while (queue.length > 0) {
+        const cur = queue.shift()!;
+        cluster.push(cur);
+        const curHex = grid[cur];
+        for (const n of getNeighbors(curHex.q, curHex.r)) {
+          const nk = hexKey(n.q, n.r);
+          if (visited.has(nk)) continue;
+          const nHex = grid[nk];
+          if (!nHex?.buildingId || nHex.constructionSite || nHex.paused) continue;
+          const nIsWildcard = nHex.buildingId === 'university' || HUB_BUILDINGS.has(nHex.buildingId);
+          if (!nIsWildcard && buildingToZone.get(nHex.buildingId) !== zt) continue;
           visited.add(nk);
           queue.push(nk);
         }
       }
-    }
-    clusters.push(cluster);
-  }
 
-  // Second pass: for each building, BFS within its cluster to compute
-  // distance-decayed adjacency score. Immediate neighbors contribute 1.0,
-  // distance 2 contributes 0.5, distance 3 contributes 0.25, etc.
-  for (const cluster of clusters) {
-    const clusterSize = cluster.length;
-    if (clusterSize <= 1) {
-      result.set(cluster[0], { size: 1, bonus: 0 });
-      continue;
-    }
-
-    const clusterSet = new Set(cluster);
-
-    for (const buildingKey of cluster) {
-      const distances = new Map<string, number>();
-      distances.set(buildingKey, 0);
-      const bfsQueue = [buildingKey];
-      let score = 0;
-
-      while (bfsQueue.length > 0) {
-        const cur = bfsQueue.shift()!;
-        const curDist = distances.get(cur)!;
-        const curHex = grid[cur];
-
-        for (const n of getNeighbors(curHex.q, curHex.r)) {
-          const nk = hexKey(n.q, n.r);
-          if (distances.has(nk) || !clusterSet.has(nk)) continue;
-          const nDist = curDist + 1;
-          distances.set(nk, nDist);
-          score += Math.pow(0.5, nDist - 1); // dist 1: 1.0, dist 2: 0.5, dist 3: 0.25...
-          bfsQueue.push(nk);
+      // Must have ≥8 non-wildcard buildings of ≥2 distinct types to qualify
+      const typesInCluster = new Set<string>();
+      let nonWildcardCount = 0;
+      for (const k of cluster) {
+        const h = grid[k];
+        const isWC = h.buildingId === 'university' || HUB_BUILDINGS.has(h.buildingId!);
+        if (!isWC) {
+          nonWildcardCount++;
+          typesInCluster.add(h.buildingId!);
         }
       }
+      if (nonWildcardCount < 8 || typesInCluster.size < 2) continue;
 
-      const bonus = score >= 5 ? 1.0 : score >= 3 ? 0.5 : score >= 2 ? 0.25 : score >= 1 ? 0.1 : 0;
-      result.set(buildingKey, { size: clusterSize, bonus });
+      clusters.push(cluster);
+    }
+
+    for (const cluster of clusters) {
+
+      // Count universities in this supercluster
+      let uniCount = 0;
+      for (const k of cluster) {
+        if (grid[k].buildingId === 'university') uniCount++;
+      }
+
+      // All buildings in a qualifying supercluster get full bonus (1.0)
+      for (const buildingKey of cluster) {
+        // Keep best bonus across zone types (wildcards can be in multiple)
+        const prev = result.get(buildingKey);
+        if (!prev || 1.0 > prev.bonus) {
+          result.set(buildingKey, { bonus: 1.0, uniCount });
+        }
+      }
     }
   }
 
   return result;
 }
 
-const INFRA_EXPORT_EFFICIENCY: Record<InfrastructureType, number> = {
+const INFRA_EXPORT_EFFICIENCY: Record<string, number> = {
   road: 0.5,
   rail: 0.7,
   canal: 1.0,
@@ -130,28 +345,21 @@ const INFRA_EXPORT_EFFICIENCY: Record<InfrastructureType, number> = {
 
 const ALL_EXPORTABLE_RESOURCES: string[] = [
   'food', 'wood', 'stone', 'iron_ore', 'coal',
-  'iron_ingot', 'tools', 'concrete', 'steel', 'machinery', 'goods',
+  'iron_ingot', 'tools', 'concrete', 'steel', 'machinery', 'goods', 'electricity',
 ];
 
 function getExportEfficiency(startKey: string, grid: Record<string, HexData>, infraEdges: Record<string, InfrastructureEdge>, getTerrains: GetTerrainsFn): number {
-  // BFS along infrastructure edges + water to the map edge.
-  // Water terrain acts as free canal (1.0 efficiency).
-  // Track weakest link per path. Return best efficiency across all paths.
-  // "Map edge" = a hex with terrain whose neighbor has no terrain (beyond the map).
   const startHex = grid[startKey];
   if (!startHex) return 0;
-
-  // Cache terrain lookups
   const terrainCache = new Map<string, TerrainType[]>();
   function getCachedTerrains(q: number, r: number): TerrainType[] {
     const k = hexKey(q, r);
-    if (terrainCache.has(k)) return terrainCache.get(k)!;
+    const cached = terrainCache.get(k);
+    if (cached) return cached;
     const t = getTerrains(q, r);
     terrainCache.set(k, t);
     return t;
   }
-
-  // A hex is at the map edge if it has terrain but a neighbor doesn't
   function isAtMapEdge(q: number, r: number): boolean {
     for (const n of getNeighbors(q, r)) {
       const nk = hexKey(n.q, n.r);
@@ -160,28 +368,18 @@ function getExportEfficiency(startKey: string, grid: Record<string, HexData>, in
     }
     return false;
   }
-
-  // Get step efficiency for traversing from one hex to a neighbor
   function getStepEfficiency(fromQ: number, fromR: number, toQ: number, toR: number): number | null {
-    // Check for infrastructure edge between these two hexes
     const ek = getEdgeKey(fromQ, fromR, toQ, toR);
     const edge = infraEdges[ek];
     let best: number | null = null;
-    if (edge) best = INFRA_EXPORT_EFFICIENCY[edge.type];
-    // Water terrain on destination acts as free canal (1.0)
+    if (edge?.transport) best = INFRA_EXPORT_EFFICIENCY[edge.transport];
     const destTerrains = getCachedTerrains(toQ, toR);
     if (destTerrains.includes('water')) best = Math.max(best ?? 0, 1.0);
     return best;
   }
-
-  // If start hex is already at the map edge, direct export
   if (isAtMapEdge(startHex.q, startHex.r)) return 1.0;
-
-  // BFS: queue entries are [hexKey, minEfficiencyAlongPath]
   const bestSeen = new Map<string, number>();
   const queue: [string, number][] = [];
-
-  // Seed with traversable neighbors (infra edge or water)
   for (const n of getNeighbors(startHex.q, startHex.r)) {
     const nk = hexKey(n.q, n.r);
     if (!grid[nk]) continue;
@@ -190,21 +388,15 @@ function getExportEfficiency(startKey: string, grid: Record<string, HexData>, in
     bestSeen.set(nk, eff);
     queue.push([nk, eff]);
   }
-
   let bestEfficiency = 0;
-
   while (queue.length > 0) {
     const [cur, minEff] = queue.shift()!;
     const curHex = grid[cur];
     if (!curHex) continue;
-
-    // Check if this hex is at the map edge
     if (isAtMapEdge(curHex.q, curHex.r)) {
       bestEfficiency = Math.max(bestEfficiency, minEff);
-      continue; // found a path, keep looking for better ones
+      continue;
     }
-
-    // Follow traversable connections (infra edges or water)
     for (const n of getNeighbors(curHex.q, curHex.r)) {
       const nk = hexKey(n.q, n.r);
       if (!grid[nk]) continue;
@@ -218,622 +410,754 @@ function getExportEfficiency(startKey: string, grid: Record<string, HexData>, in
       }
     }
   }
-
   return bestEfficiency;
 }
 
-export function simulateTick(
+/** Find the best export path from an export building to the map edge. Returns hex path or null. */
+export function getExportPath(
+  startKey: string,
   grid: Record<string, HexData>,
-  terrainGrid: Record<string, TerrainHex>,
-  getPathCost: PathCostFn,
-  getTerrains: GetTerrainsFn,
-  zones: BonusZone[],
   infraEdges: Record<string, InfrastructureEdge>,
-  infraConstructionSites: InfraEdgeConstructionSite[],
-): { grid: Record<string, HexData>; flowSummary: FlowSummary; exportRate: ResourceMap; infraEdges: Record<string, InfrastructureEdge>; infraConstructionSites: InfraEdgeConstructionSite[] } {
-  const nextGrid: Record<string, HexData> = {};
-  for (const key of Object.keys(grid)) {
-    nextGrid[key] = { ...grid[key] };
+  getTerrains: GetTerrainsFn | TerrainAssociations,
+): { q: number; r: number }[] | null {
+  const startHex = grid[startKey];
+  if (!startHex) return null;
+  const getTerrainsFn: GetTerrainsFn = typeof getTerrains === 'function'
+    ? getTerrains
+    : (q: number, r: number) => (getTerrains as TerrainAssociations)[hexKey(q, r)] || [];
+  const terrainCache = new Map<string, TerrainType[]>();
+  function getCachedTerrains(q: number, r: number): TerrainType[] {
+    const k = hexKey(q, r);
+    const cached = terrainCache.get(k);
+    if (cached) return cached;
+    const t = getTerrainsFn(q, r);
+    terrainCache.set(k, t);
+    return t;
+  }
+  function isAtMapEdge(q: number, r: number): boolean {
+    for (const n of getNeighbors(q, r)) {
+      const nk = hexKey(n.q, n.r);
+      if (!grid[nk]) return true;
+      if (getCachedTerrains(n.q, n.r).length === 0) return true;
+    }
+    return false;
+  }
+  function getStepEfficiency(fromQ: number, fromR: number, toQ: number, toR: number): number | null {
+    const ek = getEdgeKey(fromQ, fromR, toQ, toR);
+    const edge = infraEdges[ek];
+    let best: number | null = null;
+    if (edge?.transport) best = INFRA_EXPORT_EFFICIENCY[edge.transport];
+    const destTerrains = getCachedTerrains(toQ, toR);
+    if (destTerrains.includes('water')) best = Math.max(best ?? 0, 1.0);
+    return best;
+  }
+  if (isAtMapEdge(startHex.q, startHex.r)) return [{ q: startHex.q, r: startHex.r }];
+
+  // BFS tracking parent pointers for best-efficiency path reconstruction
+  const bestSeen = new Map<string, number>();
+  const parent = new Map<string, string>();
+  const queue: [string, number][] = [];
+  for (const n of getNeighbors(startHex.q, startHex.r)) {
+    const nk = hexKey(n.q, n.r);
+    if (!grid[nk]) continue;
+    const eff = getStepEfficiency(startHex.q, startHex.r, n.q, n.r);
+    if (eff === null) continue;
+    bestSeen.set(nk, eff);
+    parent.set(nk, startKey);
+    queue.push([nk, eff]);
+  }
+  let bestEfficiency = 0;
+  let bestEndKey: string | null = null;
+  while (queue.length > 0) {
+    const [cur, minEff] = queue.shift()!;
+    const curHex = grid[cur];
+    if (!curHex) continue;
+    // Skip stale entries (we already found a better path to this node)
+    if (minEff < (bestSeen.get(cur) ?? 0)) continue;
+    if (isAtMapEdge(curHex.q, curHex.r)) {
+      if (minEff > bestEfficiency) {
+        bestEfficiency = minEff;
+        bestEndKey = cur;
+      }
+      continue;
+    }
+    for (const n of getNeighbors(curHex.q, curHex.r)) {
+      const nk = hexKey(n.q, n.r);
+      if (!grid[nk]) continue;
+      const stepEff = getStepEfficiency(curHex.q, curHex.r, n.q, n.r);
+      if (stepEff === null) continue;
+      const pathEff = Math.min(minEff, stepEff);
+      const prev = bestSeen.get(nk) ?? 0;
+      if (pathEff > prev) {
+        bestSeen.set(nk, pathEff);
+        parent.set(nk, cur);
+        queue.push([nk, pathEff]);
+      }
+    }
+  }
+  if (!bestEndKey) return null;
+  // Reconstruct path (visited set prevents cycles in parent chain)
+  const path: { q: number; r: number }[] = [];
+  let cur: string | undefined = bestEndKey;
+  const visited = new Set<string>();
+  while (cur && !visited.has(cur)) {
+    visited.add(cur);
+    const hex = grid[cur];
+    if (hex) path.push({ q: hex.q, r: hex.r });
+    cur = parent.get(cur);
+  }
+  path.reverse();
+  return path;
+}
+
+function allocatePass(
+  resource: string,
+  producers: ProducerState[],
+  consumers: (ConsumerState | { hex: HexData; key: string; demand: Record<string, number>; received: Record<string, number>; distanceLoss: Record<string, number>; prioritized: boolean }),
+  distMap: DistanceMap,
+  portDistMap?: DistanceMap,
+  flowPairs?: FlowPair[]
+) {
+  const consumerList = Array.isArray(consumers) ? consumers : [consumers];
+  const pairs: AllocPair[] = [];
+  for (const p of producers) {
+    const remaining = p.remaining[resource] || 0;
+    if (remaining <= 0) continue;
+    const pDists = p.key === '__base__' ? null : distMap.get(p.key);
+    for (const c of consumerList) {
+      const needed = (c.demand[resource] || 0) - (c.received[resource] || 0);
+      if (needed <= 0) continue;
+      if (p.key === c.key) continue;
+
+      // Use canal-enabled distances when consumer is a port/depot
+      const portDists = portDistMap?.get(c.key);
+      const pathCost = portDists
+        ? (p.key === '__base__' ? 0 : (portDists.get(p.key) ?? Infinity))
+        : (pDists ? (pDists.get(c.key) ?? Infinity) : 0);
+      if (pathCost === Infinity) continue;
+      const transferEff = pathCost <= 1 ? 1.0 : Math.max(0, 1.0 - (pathCost - 1) * 0.15);
+      if (transferEff <= 0) continue;
+      pairs.push({ producer: p, consumer: c as ConsumerState, pathCost, transferEff });
+    }
+  }
+  
+  pairs.sort((a, b) => {
+    const ap = a.consumer.prioritized ? 0 : 1;
+    const bp = b.consumer.prioritized ? 0 : 1;
+    if (ap !== bp) return ap - bp;
+    return a.pathCost - b.pathCost;
+  });
+
+  for (const { producer, consumer, pathCost, transferEff } of pairs) {
+    const remaining = producer.remaining[resource] || 0;
+    const needed = (consumer.demand[resource] || 0) - (consumer.received[resource] || 0);
+    if (remaining <= 0 || needed <= 0) continue;
+
+    const rawNeeded = transferEff > 0 ? needed / transferEff : needed;
+    const canSend = Math.min(remaining, rawNeeded);
+    const delivered = canSend * transferEff;
+
+    consumer.received[resource] = (consumer.received[resource] || 0) + delivered;
+    consumer.distanceLoss[resource] = (consumer.distanceLoss[resource] || 0) + (canSend - delivered);
+    producer.remaining[resource] -= canSend;
+
+    if (flowPairs && delivered > 0.01 && producer.key !== '__base__') {
+      flowPairs.push({ sourceKey: producer.key, destKey: consumer.key, resource, amount: delivered, pathCost });
+    }
+  }
+}
+
+/** Aggregate flow pairs by (source, dest, resource), summing amounts. */
+function aggregateFlowPairs(pairs: FlowPair[]): FlowPair[] {
+  const map = new Map<string, FlowPair>();
+  for (const p of pairs) {
+    if (p.amount < 0.01) continue;
+    const key = `${p.sourceKey}|${p.destKey}|${p.resource}`;
+    const existing = map.get(key);
+    if (existing) {
+      existing.amount += p.amount;
+      existing.pathCost = Math.max(existing.pathCost, p.pathCost);
+    } else {
+      map.set(key, { ...p });
+    }
+  }
+  return Array.from(map.values());
+}
+
+export function findPath(
+  sourceKey: string,
+  destKey: string,
+  grid: Record<string, HexData>,
+  infraEdges: Record<string, InfrastructureEdge>,
+  waterPortKeys?: Set<string>,
+  stepCostOverrides?: Partial<Record<string, number>>,
+  hubZones?: { hubKey: string; hexKeys: Set<string> }[],
+  category: 'transport' | 'power' = 'transport',
+  maxCost: number = 10
+): { q: number; r: number }[] | null {
+  const sourceHex = grid[sourceKey];
+  const destHex = grid[destKey];
+  if (!sourceHex || !destHex) return null;
+  if (sourceKey === destKey) return [{ q: sourceHex.q, r: sourceHex.r }];
+
+  // Precompute hub zone lookups
+  const hexToHubZones = new Map<string, { hubKey: string; hexKeys: Set<string> }[]>();
+  const hubCenterZones = new Map<string, { hubKey: string; hexKeys: Set<string> }[]>();
+  if (hubZones) {
+    for (const zone of hubZones) {
+      for (const hk of zone.hexKeys) {
+        if (!hexToHubZones.has(hk)) hexToHubZones.set(hk, []);
+        hexToHubZones.get(hk)!.push(zone);
+      }
+      if (!hubCenterZones.has(zone.hubKey)) hubCenterZones.set(zone.hubKey, []);
+      hubCenterZones.get(zone.hubKey)!.push(zone);
+    }
   }
 
-  // Compute clusters
-  const clusters = computeClusters(grid);
+  const distances = new Map<string, number>();
+  const parent = new Map<string, string>();
+  distances.set(sourceKey, 0);
+  const queue: { key: string; q: number; r: number; cost: number }[] = [
+    { key: sourceKey, q: sourceHex.q, r: sourceHex.r, cost: 0 }
+  ];
 
-  // Build zone membership: hex key → ZoneType
-  const zoneByHex = new Map<string, ZoneType>();
-  for (const zone of zones) {
-    for (const h of getHexesInRadius(zone.centerQ, zone.centerR, 3)) {
-      const k = hexKey(h.q, h.r);
-      if (!zoneByHex.has(k)) {
-        zoneByHex.set(k, zone.type);
+  while (queue.length > 0) {
+    let minIdx = 0;
+    for (let i = 1; i < queue.length; i++) {
+      if (queue[i].cost < queue[minIdx].cost) minIdx = i;
+    }
+    const current = queue[minIdx];
+    queue[minIdx] = queue[queue.length - 1];
+    queue.pop();
+
+    if (current.key === destKey) break; // Early termination
+
+    if (current.cost > (distances.get(current.key) ?? Infinity)) continue;
+
+    // Normal hex neighbors
+    for (const d of HEX_DIRECTIONS) {
+      const nq = current.q + d.dq, nr = current.r + d.dr;
+      const nKey = hexKey(nq, nr);
+      if (!grid[nKey]) continue;
+      const ek = getEdgeKey(current.q, current.r, nq, nr);
+      const edge = infraEdges[ek];
+      const edgeType = edge ? (category === 'power' ? edge.power : edge.transport) : undefined;
+      const stepCost = edgeType
+        ? (stepCostOverrides?.[edgeType] ?? INFRA_STEP_COSTS[edgeType])
+        : 1.0;
+      const newCost = current.cost + stepCost;
+      if (newCost <= maxCost && newCost < (distances.get(nKey) ?? Infinity)) {
+        distances.set(nKey, newCost);
+        parent.set(nKey, current.key);
+        queue.push({ key: nKey, q: nq, r: nr, cost: newCost });
+      }
+    }
+
+    // Free port-to-port transit
+    if (waterPortKeys && waterPortKeys.has(current.key)) {
+      for (const portKey of waterPortKeys) {
+        if (portKey === current.key) continue;
+        const portHex = grid[portKey];
+        if (!portHex) continue;
+        if (current.cost < (distances.get(portKey) ?? Infinity)) {
+          distances.set(portKey, current.cost);
+          parent.set(portKey, current.key);
+          queue.push({ key: portKey, q: portHex.q, r: portHex.r, cost: current.cost });
+        }
+      }
+    }
+
+    // Hub zone: spoke → hub
+    const hubsForHex = hexToHubZones.get(current.key);
+    if (hubsForHex) {
+      for (const zone of hubsForHex) {
+        const hubHex = grid[zone.hubKey];
+        if (!hubHex || zone.hubKey === current.key) continue;
+        const hopCost = current.cost + HUB_HOP_COST;
+        if (hopCost <= maxCost && hopCost < (distances.get(zone.hubKey) ?? Infinity)) {
+          distances.set(zone.hubKey, hopCost);
+          parent.set(zone.hubKey, current.key);
+          queue.push({ key: zone.hubKey, q: hubHex.q, r: hubHex.r, cost: hopCost });
+        }
+      }
+    }
+
+    // Hub zone: hub → spokes
+    const centerZones = hubCenterZones.get(current.key);
+    if (centerZones) {
+      for (const zone of centerZones) {
+        for (const dKey of zone.hexKeys) {
+          if (dKey === current.key) continue;
+          const dHex = grid[dKey];
+          if (!dHex) continue;
+          const hopCost = current.cost + HUB_HOP_COST;
+          if (hopCost <= maxCost && hopCost < (distances.get(dKey) ?? Infinity)) {
+            distances.set(dKey, hopCost);
+            parent.set(dKey, current.key);
+            queue.push({ key: dKey, q: dHex.q, r: dHex.r, cost: hopCost });
+          }
+        }
       }
     }
   }
 
-  function getBuildingZoneBonus(key: string, buildingId: string): { outputBonus: number; inputReduction: number } {
-    const zt = zoneByHex.get(key);
-    if (!zt) return { outputBonus: 0, inputReduction: 0 };
-    const zoneDef = ZONE_TYPES[zt];
-    if (zoneDef.buildings.includes(buildingId)) {
-      return { outputBonus: ZONE_OUTPUT_BONUS, inputReduction: ZONE_INPUT_REDUCTION };
-    }
-    return { outputBonus: 0, inputReduction: 0 };
-  }
+  if (!distances.has(destKey)) return null;
 
-  // Collect all operating buildings
+  // Reconstruct path
+  const path: { q: number; r: number }[] = [];
+  let cur = destKey;
+  while (cur) {
+    const hex = grid[cur];
+    if (hex) path.push({ q: hex.q, r: hex.r });
+    const p = parent.get(cur);
+    if (!p) break;
+    cur = p;
+  }
+  path.reverse();
+  return path;
+}
+
+export function simulateTick(
+  grid: Record<string, HexData>,
+  _terrainGrid: Record<string, TerrainHex>,
+  terrainsOrFn: GetTerrainsFn | TerrainAssociations,
+  infraEdges: Record<string, InfrastructureEdge>,
+  infraConstructionSites: InfraEdgeConstructionSite[],
+): { grid: Record<string, HexData>; flowSummary: FlowSummary; exportRate: ResourceMap; infraEdges: Record<string, InfrastructureEdge>; infraConstructionSites: InfraEdgeConstructionSite[]; flowPairs: FlowPair[] } {
+  const getTerrains: GetTerrainsFn = typeof terrainsOrFn === 'function'
+    ? terrainsOrFn
+    : (q: number, r: number) => terrainsOrFn[hexKey(q, r)] || [];
+  const nextGrid: Record<string, HexData> = {};
+  for (const key of Object.keys(grid)) nextGrid[key] = { ...grid[key] };
+  const allFlowPairs: FlowPair[] = [];
+  const nextInfraEdges = { ...infraEdges };
+
+  const clusters = computeClusters(grid);
+  const superclusters = computeSuperclusters(grid);
+
   const operatingBuildings: { hex: HexData; key: string; buildingId: string }[] = [];
   const constructionSites: { hex: HexData; key: string }[] = [];
-
   for (const [key, hex] of Object.entries(grid)) {
     if (hex.constructionSite) {
       constructionSites.push({ hex, key });
       if (hex.constructionSite.isUpgrade && hex.constructionSite.previousBuildingId) {
         operatingBuildings.push({ hex, key, buildingId: hex.constructionSite.previousBuildingId });
       }
-    } else if (hex.buildingId) {
-      operatingBuildings.push({ hex, key, buildingId: hex.buildingId });
-    }
+    } else if (hex.buildingId && !hex.paused) operatingBuildings.push({ hex, key, buildingId: hex.buildingId });
   }
 
-  // === Set up producers and consumers ===
-  const baseProducer: ProducerState = {
-    hex: { q: 0, r: 0 },
-    key: '__base__',
-    buildingId: '__base__',
-    potential: { population: BASE_POPULATION },
-    remaining: { population: BASE_POPULATION },
-    clusterBonus: 0,
-    clusterSize: 0,
-    zoneOutputBonus: 0,
-    zoneInputReduction: 0,
-  };
+  const producers: ProducerState[] = [{
+    hex: { q: 0, r: 0 }, key: '__base__', buildingId: '__base__',
+    potential: { population: BASE_POPULATION }, realized: {}, remaining: { population: BASE_POPULATION },
+    clusterBonus: 0, clusterSize: 0, zoneOutputBonus: 0, zoneInputReduction: 0
+  }];
 
-  const producers: ProducerState[] = [baseProducer];
-  const consumers: ConsumerState[] = [];
+  const processors: ConsumerState[] = [];
+  const exporters: ConsumerState[] = [];
 
-  // Sort: population buildings first, then others
-  const popBuildings = operatingBuildings.filter(b => BUILDINGS[b.buildingId].outputs['population']);
-  const otherBuildings = operatingBuildings.filter(b => !BUILDINGS[b.buildingId].outputs['population']);
-  const sortedBuildings = [...popBuildings, ...otherBuildings];
-
-  for (const { hex, key, buildingId } of sortedBuildings) {
+  for (const { hex, key, buildingId } of operatingBuildings) {
     const building = BUILDINGS[buildingId];
-
-    // Calculate potential output (at 100% efficiency)
     const potential: Record<string, number> = {};
-    for (const [res, amount] of Object.entries(building.outputs)) {
-      potential[res] = amount as number;
-    }
-
-    // Cluster bonus
+    for (const [res, amount] of Object.entries(building.outputs)) potential[res] = amount as number;
     const cluster = clusters.get(key);
     const clusterBonus = cluster?.bonus ?? 0;
     const clusterSize = cluster?.size ?? 1;
     if (clusterBonus > 0) {
-      for (const [res, amount] of Object.entries(building.outputs)) {
-        potential[res] = (potential[res] || 0) + (amount as number) * clusterBonus;
-      }
+      for (const [res, amount] of Object.entries(building.outputs)) potential[res] = (potential[res] || 0) + (amount as number) * clusterBonus;
     }
-
-    // Zone bonus
-    const { outputBonus: zoneOutputBonus, inputReduction: zoneInputReduction } = getBuildingZoneBonus(key, buildingId);
+    const sc = superclusters.get(key);
+    const scMultiplier = sc?.bonus ?? 0;
+    const scUniCount = sc?.uniCount ?? 0;
+    const zoneOutputBonus = scMultiplier > 0 ? (ZONE_OUTPUT_BONUS + scUniCount * 0.10) * scMultiplier : 0;
+    const zoneInputReduction = scMultiplier > 0 ? (ZONE_INPUT_REDUCTION + scUniCount * 0.05) * scMultiplier : 0;
     if (zoneOutputBonus > 0) {
-      for (const [res, amount] of Object.entries(building.outputs)) {
-        potential[res] = (potential[res] || 0) + (amount as number) * zoneOutputBonus;
-      }
+      for (const [res, amount] of Object.entries(building.outputs)) potential[res] = (potential[res] || 0) + (amount as number) * zoneOutputBonus;
     }
+    producers.push({ hex, key, buildingId, potential, realized: {}, remaining: { ...potential }, clusterBonus, clusterSize, zoneOutputBonus, zoneInputReduction });
 
-    // Start with remaining = full potential (will be refined by iteration)
-    const remaining: Record<string, number> = { ...potential };
-
-    producers.push({ hex, key, buildingId, potential, remaining, clusterBonus, clusterSize, zoneOutputBonus, zoneInputReduction });
-
-    // Consumer state — apply zone input reduction
     const demand: Record<string, number> = {};
-    for (const [res, amount] of Object.entries(building.inputs)) {
-      demand[res] = (amount as number) * (1 - zoneInputReduction);
-    }
-
+    for (const [res, amount] of Object.entries(building.inputs)) demand[res] = (amount as number) * (1 - zoneInputReduction);
     if (Object.keys(demand).length > 0) {
-      consumers.push({ hex, key, buildingId, prioritized: !!hex.prioritized, demand, received: {}, distanceLoss: {} });
+      const state = { hex, key, buildingId, prioritized: !!hex.prioritized, demand, received: {}, distanceLoss: {} };
+      if (buildingId === 'export_port') exporters.push(state);
+      else processors.push(state);
     }
   }
 
-  // Export ports are also consumers (they demand goods, tools, population)
-  // They're already included above if they have inputs — which they do
+  // No need to split again, use processors and exporters arrays directly
+  const allProcessorRes = new Set<string>();
+  for (const c of processors) for (const res of Object.keys(c.demand)) allProcessorRes.add(res);
 
-  // === Pre-compute allocation pairs (these don't change between iterations) ===
-  const producersByRes: Record<string, ProducerState[]> = {};
-  for (const p of producers) {
-    for (const res of Object.keys(p.potential)) {
-      if (!producersByRes[res]) producersByRes[res] = [];
-      producersByRes[res].push(p);
+  // Collect water port keys: export_port buildings on water terrain or with a canal edge
+  const waterPortKeys = new Set<string>();
+  for (const [key, hex] of Object.entries(grid)) {
+    if (hex.buildingId === 'export_port' && !hex.constructionSite) {
+      const terrains = getTerrains(hex.q, hex.r);
+      const hasCanal = countHexConnections(hex.q, hex.r, infraEdges, 'canal') > 0;
+      if (terrains.includes('water') || hasCanal) waterPortKeys.add(key);
     }
   }
 
-  const allConsumerResources = new Set<string>();
-  for (const c of consumers) {
-    for (const res of Object.keys(c.demand)) {
-      allConsumerResources.add(res);
-    }
+  // Compute hub zones from operating hub buildings for free flow within radius.
+  // Each hex belongs only to the closest hub (by hex distance) to prevent
+  // stacking benefits from overlapping hub radii.
+  const hubBuildings: { key: string; q: number; r: number; radius: number }[] = [];
+  for (const { key, buildingId, hex } of operatingBuildings) {
+    const radius = HUB_RADIUS[buildingId];
+    if (radius === undefined) continue;
+    hubBuildings.push({ key, q: hex.q, r: hex.r, radius });
   }
-
-  // Resources demanded by construction sites count as demand too
-  const demandedResources = new Set(allConsumerResources);
-  for (const { hex } of constructionSites) {
-    for (const res of Object.keys(hex.constructionSite!.totalCost)) {
-      const delivered = hex.constructionSite!.delivered[res] || 0;
-      if (delivered < hex.constructionSite!.totalCost[res]) {
-        demandedResources.add(res);
-      }
-    }
-  }
-  // Infra edge construction sites also create demand
-  for (const site of infraConstructionSites) {
-    for (const res of Object.keys(site.totalCost)) {
-      const delivered = site.delivered[res] || 0;
-      if (delivered < site.totalCost[res]) {
-        demandedResources.add(res);
-      }
-    }
-  }
-
-  // Export ports and trade depots create demand even though they have no outputs
-  for (const { buildingId } of operatingBuildings) {
-    if (buildingId === 'export_port' || buildingId === 'trade_depot') {
-      for (const res of Object.keys(BUILDINGS[buildingId].inputs)) {
-        demandedResources.add(res);
-      }
-    }
-  }
-  // Trade depots can absorb any exportable resource
-  for (const { buildingId } of operatingBuildings) {
-    if (buildingId === 'trade_depot') {
-      for (const res of ALL_EXPORTABLE_RESOURCES) {
-        demandedResources.add(res);
-      }
-    }
-  }
-
-  const pathCostCache = new Map<string, number>();
-  function getCachedPathCost(a: HexData, b: HexData): number {
-    const cacheKey = `${a.q},${a.r}->${b.q},${b.r}`;
-    if (pathCostCache.has(cacheKey)) return pathCostCache.get(cacheKey)!;
-    const cost = getPathCost(a, b, grid);
-    pathCostCache.set(cacheKey, cost);
-    return cost;
-  }
-
-  // Pre-compute sorted pairs per resource
-  const pairsPerResource: Record<string, AllocPair[]> = {};
-  for (const res of allConsumerResources) {
-    const resProducers = producersByRes[res] || [];
-    const resConsumers = consumers.filter(c => c.demand[res] && c.demand[res] > 0);
-    const pairs: AllocPair[] = [];
-    for (const p of resProducers) {
-      for (const c of resConsumers) {
-        if (p.key === c.key) continue;
-        const isBase = p.key === '__base__';
-        const pathCost = isBase ? 0 : getCachedPathCost(p.hex, c.hex);
-        if (pathCost === Infinity) continue;
-        const transferEff = pathCost <= 1 ? 1.0 : Math.max(0, 1.0 - (pathCost - 1) * 0.15);
-        if (transferEff <= 0) continue;
-        pairs.push({ producer: p, consumer: c, pathCost, transferEff });
-      }
-    }
-    // Prioritized consumers first, then by distance
-    pairs.sort((a, b) => {
-      const ap = a.consumer.prioritized ? 0 : 1;
-      const bp = b.consumer.prioritized ? 0 : 1;
-      if (ap !== bp) return ap - bp;
-      return a.pathCost - b.pathCost;
-    });
-    pairsPerResource[res] = pairs;
-  }
-
-  // Map consumers by key for efficiency lookup
-  const consumerByKey = new Map<string, ConsumerState>();
-  for (const c of consumers) {
-    consumerByKey.set(c.key, c);
-  }
-
-  // === Iterate allocation to convergence ===
-  const efficiencyByKey = new Map<string, number>();
-  const hasConstructionSites = constructionSites.length > 0 || infraConstructionSites.length > 0;
-  const operatingFraction = hasConstructionSites ? 1 - CONSTRUCTION_RESERVE : 1;
-
-  for (let iter = 0; iter < CONVERGENCE_ITERATIONS; iter++) {
-    // Reset consumer state
-    for (const c of consumers) {
-      c.received = {};
-      c.distanceLoss = {};
-    }
-
-    // Reset producer remaining based on current efficiency estimates
-    // When construction sites exist, reserve a fraction for them
-    for (const p of producers) {
-      if (p.key === '__base__') {
-        p.remaining = { population: BASE_POPULATION };
-        continue;
-      }
-      const eff = efficiencyByKey.get(p.key) ?? 1;
-      for (const res of Object.keys(p.potential)) {
-        p.remaining[res] = p.potential[res] * eff * operatingFraction;
-      }
-    }
-
-    // Greedy allocation per resource
-    for (const res of allConsumerResources) {
-      const pairs = pairsPerResource[res];
-      if (!pairs) continue;
-
-      const stillNeeds = new Map<ConsumerState, number>();
-      for (const c of consumers) {
-        if (c.demand[res] && c.demand[res] > 0) {
-          stillNeeds.set(c, c.demand[res]);
+  // For each hex covered by any hub, assign it to the nearest hub only
+  const hubHexSets = new Map<string, Set<string>>();
+  for (const hub of hubBuildings) hubHexSets.set(hub.key, new Set<string>());
+  if (hubBuildings.length > 0) {
+    // Collect all candidate hexes from all hubs
+    const hexCandidates = new Map<string, { q: number; r: number; bestHub: string; bestDist: number }>();
+    for (const hub of hubBuildings) {
+      for (const h of getHexesInRadius(hub.q, hub.r, hub.radius)) {
+        const k = hexKey(h.q, h.r);
+        if (!grid[k]) continue;
+        const dist = Math.max(Math.abs(h.q - hub.q), Math.abs(h.r - hub.r), Math.abs((h.q + h.r) - (hub.q + hub.r)));
+        const existing = hexCandidates.get(k);
+        if (!existing || dist < existing.bestDist || (dist === existing.bestDist && hub.key < existing.bestHub)) {
+          hexCandidates.set(k, { q: h.q, r: h.r, bestHub: hub.key, bestDist: dist });
         }
       }
+    }
+    for (const [hk, info] of hexCandidates) {
+      hubHexSets.get(info.bestHub)!.add(hk);
+    }
+  }
+  const hubZones: { hubKey: string; hexKeys: Set<string> }[] = [];
+  for (const hub of hubBuildings) {
+    hubZones.push({ hubKey: hub.key, hexKeys: hubHexSets.get(hub.key)! });
+  }
 
-      for (const { producer, consumer, transferEff } of pairs) {
-        const remaining = producer.remaining[res] || 0;
-        const needed = stillNeeds.get(consumer) || 0;
-        if (remaining <= 0 || needed <= 0) continue;
+  // Precompute all-pairs distances once (SSSP from each producer)
+  const producerKeys = producers.filter(p => p.key !== '__base__').map(p => p.key);
+  const distMap = precomputeDistances(producerKeys, grid, infraEdges, 10, waterPortKeys, undefined, hubZones);
 
-        // Send enough raw to deliver `needed` after decay
-        const rawNeeded = transferEff > 0 ? needed / transferEff : needed;
-        const canSend = Math.min(remaining, rawNeeded);
-        const delivered = canSend * transferEff;
+  // Canal-enabled distances from ports/depots/stations (undirected: dist port→hex = hex→port)
+  const portDepotKeys = producers
+    .filter(p => p.buildingId === 'export_port' || p.buildingId === 'trade_depot' || p.buildingId === 'station')
+    .map(p => p.key);
+  const portDistMap = portDepotKeys.length > 0
+    ? precomputeDistances(portDepotKeys, grid, infraEdges, 10, waterPortKeys, { canal: 0 }, hubZones)
+    : new Map<string, Map<string, number>>();
 
-        consumer.received[res] = (consumer.received[res] || 0) + delivered;
-        consumer.distanceLoss[res] = (consumer.distanceLoss[res] || 0) + (canSend - delivered);
-        producer.remaining[res] -= canSend;
-        stillNeeds.set(consumer, needed - delivered);
+  // Electricity distance map: only from producers that actually output electricity
+  const elecProducerKeys = producers
+    .filter(p => p.key !== '__base__' && (p.potential['electricity'] || 0) > 0)
+    .map(p => p.key);
+  const elecDistMap = elecProducerKeys.length > 0
+    ? precomputeDistances(elecProducerKeys, grid, infraEdges, 10, waterPortKeys, { power_line: 0.2, hv_line: 0 }, hubZones, 'power')
+    : new Map<string, Map<string, number>>();
+
+  // Build lookup maps for processors/exporters by key
+  const processorByKey = new Map<string, ConsumerState>();
+  for (const c of processors) processorByKey.set(c.key, c);
+  const exporterByKey = new Map<string, ConsumerState>();
+  for (const c of exporters) exporterByKey.set(c.key, c);
+
+  // Collect resources needed by construction sites for targeted reserve
+  const constructionResources = new Set<string>();
+  for (const { hex } of constructionSites) {
+    for (const [res, total] of Object.entries(hex.constructionSite!.totalCost)) {
+      if ((hex.constructionSite!.delivered[res] || 0) < total) constructionResources.add(res);
+    }
+  }
+  for (const site of infraConstructionSites) {
+    for (const [res, total] of Object.entries(site.totalCost)) {
+      if ((site.delivered[res] || 0) < total) constructionResources.add(res);
+    }
+  }
+  const hasConstructionSites = constructionResources.size > 0;
+
+  // === 1. Convergence Loop (Processors Only) ===
+  const efficiencyByKey = new Map<string, number>();
+  for (let iter = 0; iter < CONVERGENCE_ITERATIONS; iter++) {
+    for (const c of processors) { c.received = {}; c.distanceLoss = {}; }
+    for (const p of producers) {
+      if (p.key === '__base__') p.remaining = { population: BASE_POPULATION };
+      else {
+        const eff = efficiencyByKey.get(p.key) ?? 1;
+        for (const res of Object.keys(p.potential)) {
+          p.remaining[res] = p.potential[res] * eff * (constructionResources.has(res) ? 1 - CONSTRUCTION_RESERVE : 1);
+        }
       }
     }
-
-    // Compute efficiencies from allocation results
+    for (const res of allProcessorRes) {
+      allocatePass(res, producers, processors, res === 'electricity' ? elecDistMap : distMap);
+    }
     for (const producer of producers) {
       if (producer.key === '__base__') continue;
-
-      // Don't produce if none of this building's outputs are demanded
-      // Export ports and trade depots have no outputs but should still run
-      const hasOutputDemand = Object.keys(producer.potential).some(res => demandedResources.has(res));
-      const isExporter = producer.buildingId === 'export_port' || producer.buildingId === 'trade_depot';
-      if (!hasOutputDemand && !isExporter) {
-        efficiencyByKey.set(producer.key, 0);
-        continue;
-      }
-
-      const consumer = consumerByKey.get(producer.key);
-
+      const consumer = processorByKey.get(producer.key);
       let inputEfficiency = 1.0;
       if (consumer) {
         for (const res of Object.keys(consumer.demand)) {
-          const required = consumer.demand[res] || 0;
-          const received = consumer.received[res] || 0;
-          const satisfaction = required > 0 ? Math.min(1, received / required) : 1;
+          const satisfaction = (consumer.demand[res] || 0) > 0 ? Math.min(1, (consumer.received[res] || 0) / consumer.demand[res]) : 1;
           if (satisfaction < inputEfficiency) inputEfficiency = satisfaction;
         }
       }
-
       efficiencyByKey.set(producer.key, Math.max(inputEfficiency, MIN_PRODUCTION_FLOOR));
     }
   }
 
-  // === After convergence: compute final summary and flowState ===
+  // === 2. Establish Realized Production ===
+  for (const p of producers) {
+    if (p.key === '__base__') { p.realized = { population: BASE_POPULATION }; p.remaining = { population: BASE_POPULATION }; }
+    else {
+      const eff = efficiencyByKey.get(p.key) ?? 1;
+      p.realized = {}; p.remaining = {};
+      for (const [res, amt] of Object.entries(p.potential)) { p.realized[res] = amt * eff; p.remaining[res] = amt * eff * (constructionResources.has(res) ? 1 - CONSTRUCTION_RESERVE : 1); }
+    }
+  }
+
+  // === 3. Allocation Pass: Processors (Priority 1) ===
+  for (const c of processors) { c.received = {}; c.distanceLoss = {}; }
+  for (const res of allProcessorRes) allocatePass(res, producers, processors, res === 'electricity' ? elecDistMap : distMap, undefined, allFlowPairs);
+
+  // Release the construction reserve back into producer remaining before construction pass
+  if (hasConstructionSites) {
+    for (const p of producers) {
+      if (p.key === '__base__') continue;
+      const eff = efficiencyByKey.get(p.key) ?? 1;
+      for (const res of Object.keys(p.potential)) {
+        if (constructionResources.has(res)) {
+          p.remaining[res] = (p.remaining[res] || 0) + p.potential[res] * eff * CONSTRUCTION_RESERVE;
+        }
+      }
+    }
+  }
+
   const summary = emptyFlowSummary();
+
+  // === 4. Allocation Pass: Construction (Priority 2) ===
+  const constructionDemands: (ConsumerState & { siteKey: string })[] = [];
+  for (const { hex, key } of constructionSites) {
+    const demand: Record<string, number> = {};
+    for (const [res, total] of Object.entries(hex.constructionSite!.totalCost)) {
+      demand[res] = total - (hex.constructionSite!.delivered[res] || 0);
+    }
+    constructionDemands.push({ hex, key, buildingId: 'site', prioritized: !!hex.prioritized, demand, received: {}, distanceLoss: {}, siteKey: key });
+  }
+  // Infra construction sites
+  const infraDemands: (ConsumerState & { edgeKey: string })[] = [];
+  for (const site of infraConstructionSites) {
+    const demand: Record<string, number> = {};
+    for (const [res, total] of Object.entries(site.totalCost)) {
+      demand[res] = total - (site.delivered[res] || 0);
+    }
+    const hexAKey = hexKey(site.hexA.q, site.hexA.r);
+    const hexA = grid[hexAKey] || { q: site.hexA.q, r: site.hexA.r };
+    infraDemands.push({ hex: hexA as HexData, key: hexAKey, buildingId: 'infra', prioritized: false, demand, received: {}, distanceLoss: {}, edgeKey: site.edgeKey });
+  }
+
+  const allConstructionConsumers = [...constructionDemands, ...infraDemands];
+  const allConstRes = new Set<string>();
+  for (const c of allConstructionConsumers) for (const res of Object.keys(c.demand)) allConstRes.add(res);
+  for (const res of allConstRes) allocatePass(res, producers, allConstructionConsumers, distMap);
+
+  // === 5. Allocation Pass: Export Ports (Priority 3) ===
+  const allExportRes = new Set<string>();
+  for (const c of exporters) for (const res of Object.keys(c.demand)) allExportRes.add(res);
+  for (const res of allExportRes) allocatePass(res, producers, exporters, res === 'electricity' ? elecDistMap : distMap, portDistMap, allFlowPairs);
+
+  // Cache export efficiency BFS results (called for each hub building, potentially twice)
+  const exportEffCache = new Map<string, number>();
+  function getCachedExportEfficiency(key: string): number {
+    const cached = exportEffCache.get(key);
+    if (cached !== undefined) return cached;
+    const eff = getExportEfficiency(key, grid, infraEdges, getTerrains);
+    exportEffCache.set(key, eff);
+    return eff;
+  }
+
   addToMap(summary.potential, 'population', BASE_POPULATION);
   addToMap(summary.realized, 'population', BASE_POPULATION);
-
-  // Export tracking
   const exportRate: ResourceMap = {};
 
   for (const producer of producers) {
     if (producer.key === '__base__') continue;
-
     const building = BUILDINGS[producer.buildingId];
-    const consumer = consumerByKey.get(producer.key);
+    const processor = processorByKey.get(producer.key);
+    const exporter = exporterByKey.get(producer.key);
     const inputEfficiency = efficiencyByKey.get(producer.key) ?? 1;
 
-    // Build diagnostics — use consumer demand (already zone-reduced) for required
+    // Potential demand for ledger
+    for (const [res, amt] of Object.entries(building.inputs)) addToMap(summary.potentialDemand, res, amt * (1 - producer.zoneInputReduction));
+
+    // Summary of production
+    for (const [res, amt] of Object.entries(producer.realized)) {
+      addToMap(summary.potential, res, producer.potential[res]);
+      addToMap(summary.realized, res, amt);
+    }
+
+    const buildingExports: ResourceMap = {};
+    let buildingExportEff = 0;
+    if (producer.buildingId === 'export_port' || producer.buildingId === 'trade_depot' || producer.buildingId === 'station') {
+      buildingExportEff = getCachedExportEfficiency(producer.key);
+    }
+
+    // Diagnostics and Consumption for Processors
     const inputDiagnostics: InputDiagnostic[] = [];
-    if (consumer) {
+    const consumed: ResourceMap = {};
+    if (processor) {
       for (const res of Object.keys(building.inputs)) {
-        const required = consumer.demand[res] || 0;
-        const received = consumer.received[res] || 0;
-        const distLoss = consumer.distanceLoss[res] || 0;
+        const received = processor.received[res] || 0;
+        const distLoss = processor.distanceLoss[res] || 0;
+        const required = processor.demand[res] || 0;
         const satisfaction = required > 0 ? Math.min(1, received / required) : 1;
         const shortage = Math.max(0, required - received - distLoss);
         inputDiagnostics.push({ resource: res, required, available: received, distanceLoss: distLoss, inputShortage: shortage, satisfaction });
+        consumed[res] = received;
+        addToMap(summary.consumed, res, received);
+        addToMap(summary.lostToDistance, res, distLoss);
+        addToMap(summary.lostToShortage, res, shortage);
       }
     }
 
-    // Potential and realized output
-    const potential: ResourceMap = {};
-    const realized: ResourceMap = {};
-    const consumed: ResourceMap = {};
-
-    for (const [res, potAmount] of Object.entries(producer.potential)) {
-      potential[res] = potAmount;
-      addToMap(summary.potential, res, potAmount);
-      const realAmount = potAmount * inputEfficiency;
-      realized[res] = realAmount;
-      addToMap(summary.realized, res, realAmount);
-    }
-
-    if (consumer) {
+    // Consumption for Exporter Ports
+    if (exporter) {
+      let exportEff = 0;
       for (const res of Object.keys(building.inputs)) {
-        const consumedAmount = (consumer.demand[res] || 0) * inputEfficiency;
-        consumed[res] = consumedAmount;
-        addToMap(summary.consumed, res, consumedAmount);
-      }
-    }
-
-    for (const diag of inputDiagnostics) {
-      addToMap(summary.lostToDistance, diag.resource, diag.distanceLoss);
-      addToMap(summary.lostToShortage, diag.resource, diag.inputShortage);
-    }
-
-    // Export port / trade depot: compute export efficiency for all exporters
-    let buildingExportEff = 0;
-    const buildingExports: ResourceMap = {};
-    if (producer.buildingId === 'export_port' || producer.buildingId === 'trade_depot') {
-      buildingExportEff = getExportEfficiency(producer.key, grid, infraEdges, getTerrains);
-    }
-    // Export port: track exports based on consumed goods * export efficiency
-    if (producer.buildingId === 'export_port' && consumer) {
-      if (buildingExportEff > 0 && inputEfficiency > 0) {
-        const goodsConsumed = consumed['goods'] || 0;
-        if (goodsConsumed > 0) {
-          const exported = goodsConsumed * buildingExportEff;
+        const received = exporter.received[res] || 0;
+        const distLoss = exporter.distanceLoss[res] || 0;
+        const required = exporter.demand[res] || 0;
+        const satisfaction = required > 0 ? Math.min(1, received / required) : 1;
+        if (res === 'goods') exportEff = satisfaction; // simplistic
+        consumed[res] = received;
+        addToMap(summary.consumed, res, received);
+        addToMap(summary.exportConsumed, res, received);
+        addToMap(summary.lostToDistance, res, distLoss);
+        if (buildingExportEff > 0 && res === 'goods') {
+          const exported = received * buildingExportEff;
           addToMap(exportRate, 'goods', exported);
           buildingExports['goods'] = exported;
         }
       }
     }
 
-    const flowState: BuildingFlowState = {
-      potential, realized, consumed, inputDiagnostics, efficiency: inputEfficiency,
-      clusterBonus: producer.clusterBonus,
-      clusterSize: producer.clusterSize,
-      zoneOutputBonus: producer.zoneOutputBonus,
-      zoneInputReduction: producer.zoneInputReduction,
-      exports: buildingExports,
-      exportEfficiency: buildingExportEff,
+    nextGrid[producer.key].flowState = {
+      potential: producer.potential, realized: producer.realized, consumed, inputDiagnostics,
+      efficiency: producer.buildingId === 'export_port' ? 1 : inputEfficiency, // port efficiency handled by consumed goods
+      clusterBonus: producer.clusterBonus, clusterSize: producer.clusterSize,
+      zoneOutputBonus: producer.zoneOutputBonus, zoneInputReduction: producer.zoneInputReduction,
+      exports: buildingExports, exportEfficiency: buildingExportEff
     };
-    nextGrid[producer.key] = { ...nextGrid[producer.key], flowState };
   }
 
-  // === PASS 3: Feed construction sites ===
-  // Construction sites get: leftover from operating allocation + reserved fraction + recycled excess
-  const siteProducerRemaining: Map<ProducerState, Record<string, number>> = new Map();
-  for (const p of producers) {
-    if (p.key === '__base__') {
-      siteProducerRemaining.set(p, { ...p.remaining });
-      continue;
-    }
-    const eff = efficiencyByKey.get(p.key) ?? 1;
-    const rem: Record<string, number> = {};
-    for (const res of Object.keys(p.potential)) {
-      const reserved = hasConstructionSites ? p.potential[res] * eff * CONSTRUCTION_RESERVE : 0;
-      rem[res] = Math.max(0, p.remaining[res] || 0) + reserved;
-    }
-    siteProducerRemaining.set(p, rem);
-  }
-
-  // Compute recycled capacity: resources allocated to consumers but not actually consumed
-  // (e.g. a workshop at 60% efficiency received full stone but only consumed 60%)
-  const recycledSources: { hex: HexData; remaining: Record<string, number> }[] = [];
-  for (const c of consumers) {
-    const eff = efficiencyByKey.get(c.key) ?? 1;
-    const excess: Record<string, number> = {};
-    let hasExcess = false;
-
-    for (const res of Object.keys(c.received)) {
-      const received = c.received[res] || 0;
-      if (received <= 0.001) continue;
-
-      const consumedAmt = (c.demand[res] || 0) * eff;
-      const e = received - consumedAmt;
-      if (e > 0.001) {
-        excess[res] = e;
-        hasExcess = true;
-      }
-    }
-
-    if (hasExcess) {
-      recycledSources.push({ hex: c.hex, remaining: excess });
-    }
-  }
-
-  for (const { hex, key } of constructionSites) {
-    const site = hex.constructionSite!;
-    const newDelivered = { ...site.delivered };
-
-    for (const [res, totalNeeded] of Object.entries(site.totalCost)) {
-      const alreadyDelivered = newDelivered[res] || 0;
-      const stillNeeded = totalNeeded - alreadyDelivered;
-      if (stillNeeded <= 0) continue;
-
-      const pairs: { remaining: Record<string, number>; pathCost: number; transferEff: number }[] = [];
-      // Real producers
-      for (const p of (producersByRes[res] || [])) {
-        const rem = siteProducerRemaining.get(p);
-        if (!rem || (rem[res] || 0) <= 0) continue;
-        const isBase = p.key === '__base__';
-        const pathCost = isBase ? 0 : getCachedPathCost(p.hex, hex);
-        if (pathCost === Infinity) continue;
-        const transferEff = pathCost <= 1 ? 1.0 : Math.max(0, 1.0 - (pathCost - 1) * 0.15);
-        if (transferEff <= 0) continue;
-        pairs.push({ remaining: rem, pathCost, transferEff });
-      }
-      // Recycled sources from over-allocated consumers
-      for (const rs of recycledSources) {
-        if ((rs.remaining[res] || 0) <= 0) continue;
-        const pathCost = getCachedPathCost(rs.hex, hex);
-        if (pathCost === Infinity) continue;
-        const transferEff = pathCost <= 1 ? 1.0 : Math.max(0, 1.0 - (pathCost - 1) * 0.15);
-        if (transferEff <= 0) continue;
-        pairs.push({ remaining: rs.remaining, pathCost, transferEff });
-      }
-      pairs.sort((a, b) => a.pathCost - b.pathCost);
-
-      let received = 0;
-      for (const { remaining: rem, transferEff } of pairs) {
-        const available = rem[res] || 0;
-        if (available <= 0 || received >= stillNeeded) break;
-        const deficit = stillNeeded - received;
-        const rawNeeded = transferEff > 0 ? deficit / transferEff : deficit;
-        const canSend = Math.min(available, rawNeeded);
-        const delivered = canSend * transferEff;
-        received += delivered;
-        rem[res] -= canSend;
-      }
-
-      newDelivered[res] = alreadyDelivered + received;
-    }
-
-    const allComplete = Object.entries(site.totalCost).every(
-      ([res, needed]) => (newDelivered[res] || 0) >= needed - 0.01
-    );
-
-    if (allComplete) {
-      nextGrid[key] = {
-        ...nextGrid[key],
-        buildingId: site.targetBuildingId,
-        constructionSite: undefined,
-        flowState: undefined,
-      };
-    } else {
-      nextGrid[key] = {
-        ...nextGrid[key],
-        constructionSite: { ...site, delivered: newDelivered },
-      };
-    }
-  }
-
-  // === PASS 3b: Feed infra edge construction sites ===
-  const nextInfraEdges = { ...infraEdges };
-  const nextInfraConstructionSites: InfraEdgeConstructionSite[] = [];
-  for (const site of infraConstructionSites) {
-    const newDelivered = { ...site.delivered };
-    // Use hexA as delivery target
-    const deliveryHex = grid[hexKey(site.hexA.q, site.hexA.r)];
-
-    for (const [res, totalNeeded] of Object.entries(site.totalCost)) {
-      const alreadyDelivered = newDelivered[res] || 0;
-      const stillNeeded = totalNeeded - alreadyDelivered;
-      if (stillNeeded <= 0) continue;
-
-      const pairs: { remaining: Record<string, number>; pathCost: number; transferEff: number }[] = [];
-      for (const p of (producersByRes[res] || [])) {
-        const rem = siteProducerRemaining.get(p);
-        if (!rem || (rem[res] || 0) <= 0) continue;
-        const isBase = p.key === '__base__';
-        const pathCost = isBase ? 0 : (deliveryHex ? getCachedPathCost(p.hex, deliveryHex) : Infinity);
-        if (pathCost === Infinity) continue;
-        const transferEff = pathCost <= 1 ? 1.0 : Math.max(0, 1.0 - (pathCost - 1) * 0.15);
-        if (transferEff <= 0) continue;
-        pairs.push({ remaining: rem, pathCost, transferEff });
-      }
-      for (const rs of recycledSources) {
-        if ((rs.remaining[res] || 0) <= 0) continue;
-        if (!deliveryHex) continue;
-        const pathCost = getCachedPathCost(rs.hex, deliveryHex);
-        if (pathCost === Infinity) continue;
-        const transferEff = pathCost <= 1 ? 1.0 : Math.max(0, 1.0 - (pathCost - 1) * 0.15);
-        if (transferEff <= 0) continue;
-        pairs.push({ remaining: rs.remaining, pathCost, transferEff });
-      }
-      pairs.sort((a, b) => a.pathCost - b.pathCost);
-
-      let received = 0;
-      for (const { remaining: rem, transferEff } of pairs) {
-        const available = rem[res] || 0;
-        if (available <= 0 || received >= stillNeeded) break;
-        const deficit = stillNeeded - received;
-        const rawNeeded = transferEff > 0 ? deficit / transferEff : deficit;
-        const canSend = Math.min(available, rawNeeded);
-        const delivered = canSend * transferEff;
-        received += delivered;
-        rem[res] -= canSend;
-      }
-
-      newDelivered[res] = alreadyDelivered + received;
-    }
-
-    const allComplete = Object.entries(site.totalCost).every(
-      ([res, needed]) => (newDelivered[res] || 0) >= needed - 0.01
-    );
-
-    if (allComplete) {
-      nextInfraEdges[site.edgeKey] = { type: site.targetType };
-    } else {
-      nextInfraConstructionSites.push({ ...site, delivered: newDelivered });
-    }
-  }
-
-  // === PASS 4: Trade Depot surplus absorption ===
-  // Operating trade depots with map-edge access absorb remaining surplus and export it
-  for (const producer of producers) {
-    if (producer.key === '__base__' || producer.buildingId !== 'trade_depot') continue;
-    const eff = efficiencyByKey.get(producer.key) ?? 0;
-    if (eff <= 0) continue;
-
-    const depotExportEff = getExportEfficiency(producer.key, grid, infraEdges, getTerrains);
+  // === Trade Depot Surplus Absorption ===
+  // All depots/stations share surplus proportionally based on transfer efficiency
+  const depots: { producer: ProducerState; exportEff: number }[] = [];
+  for (const depot of producers) {
+    if (depot.key === '__base__' || (depot.buildingId !== 'trade_depot' && depot.buildingId !== 'station')) continue;
+    const depotExportEff = getCachedExportEfficiency(depot.key);
     if (depotExportEff <= 0) continue;
+    depots.push({ producer: depot, exportEff: depotExportEff });
+  }
+  const depotExportsMap = new Map<string, ResourceMap>();
+  for (const d of depots) depotExportsMap.set(d.producer.key, {});
 
-    const depotExports: ResourceMap = {};
-
-    for (const res of ALL_EXPORTABLE_RESOURCES) {
-      // Collect from siteProducerRemaining (already depleted by Pass 3)
-      const resPairs: { remaining: Record<string, number>; pathCost: number; transferEff: number }[] = [];
-      for (const p of (producersByRes[res] || [])) {
-        const rem = siteProducerRemaining.get(p);
-        if (!rem || (rem[res] || 0) <= 0) continue;
-        const isBase = p.key === '__base__';
-        const pathCost = isBase ? 0 : getCachedPathCost(p.hex, producer.hex);
+  for (const res of ALL_EXPORTABLE_RESOURCES) {
+    // For each producer with remaining resources, compute transfer efficiency to each depot
+    const claims: { producerKey: string; depotKey: string; transferEff: number; available: number; depotExportEff: number }[] = [];
+    for (const p of producers) {
+      if (p.key === '__base__' || (p.remaining[res] || 0) <= 0) continue;
+      const available = p.remaining[res] || 0;
+      for (const d of depots) {
+        const depotDists = portDistMap.get(d.producer.key);
+        const fallbackDist = res === 'electricity'
+          ? (elecDistMap.get(p.key)?.get(d.producer.key) ?? Infinity)
+          : (distMap.get(p.key)?.get(d.producer.key) ?? Infinity);
+        const pathCost = depotDists ? Math.min(depotDists.get(p.key) ?? Infinity, fallbackDist) : fallbackDist;
         if (pathCost === Infinity) continue;
         const transferEff = pathCost <= 1 ? 1.0 : Math.max(0, 1.0 - (pathCost - 1) * 0.15);
         if (transferEff <= 0) continue;
-        resPairs.push({ remaining: rem, pathCost, transferEff });
-      }
-      // Also pull from recycled sources
-      for (const rs of recycledSources) {
-        if ((rs.remaining[res] || 0) <= 0) continue;
-        const pathCost = getCachedPathCost(rs.hex, producer.hex);
-        if (pathCost === Infinity) continue;
-        const transferEff = pathCost <= 1 ? 1.0 : Math.max(0, 1.0 - (pathCost - 1) * 0.15);
-        if (transferEff <= 0) continue;
-        resPairs.push({ remaining: rs.remaining, pathCost, transferEff });
-      }
-      resPairs.sort((a, b) => a.pathCost - b.pathCost);
-
-      let totalReceived = 0;
-      for (const { remaining: rem, transferEff } of resPairs) {
-        const available = rem[res] || 0;
-        if (available <= 0) continue;
-        const delivered = available * transferEff;
-        totalReceived += delivered;
-        rem[res] = 0;
-      }
-
-      if (totalReceived > 0) {
-        const exported = totalReceived * depotExportEff;
-        addToMap(exportRate, res, exported);
-        depotExports[res] = exported;
+        claims.push({ producerKey: p.key, depotKey: d.producer.key, transferEff, available, depotExportEff: d.exportEff });
       }
     }
-
-    // Update flowState for this trade depot
-    const existingFlowState = nextGrid[producer.key]?.flowState;
-    if (existingFlowState) {
-      nextGrid[producer.key] = {
-        ...nextGrid[producer.key],
-        flowState: { ...existingFlowState, exports: depotExports, exportEfficiency: depotExportEff },
-      };
+    // Group claims by producer to split surplus proportionally
+    const byProducer = new Map<string, typeof claims>();
+    for (const c of claims) {
+      if (!byProducer.has(c.producerKey)) byProducer.set(c.producerKey, []);
+      byProducer.get(c.producerKey)!.push(c);
+    }
+    for (const [pKey, pClaims] of byProducer) {
+      const p = producers.find(x => x.key === pKey)!;
+      const available = p.remaining[res] || 0;
+      if (available <= 0) continue;
+      const totalWeight = pClaims.reduce((s, c) => s + c.transferEff, 0);
+      for (const c of pClaims) {
+        const share = available * (c.transferEff / totalWeight);
+        const received = share * c.transferEff;
+        const exported = received * c.depotExportEff;
+        if (exported > 0) {
+          addToMap(exportRate, res, exported);
+          const dExports = depotExportsMap.get(c.depotKey)!;
+          dExports[res] = (dExports[res] || 0) + exported;
+        }
+      }
+      addToMap(summary.consumed, res, available);
+      addToMap(summary.exportConsumed, res, available);
+      p.remaining[res] = 0;
+    }
+  }
+  for (const d of depots) {
+    const flowState = nextGrid[d.producer.key].flowState;
+    if (flowState) {
+      nextGrid[d.producer.key].flowState = { ...flowState, exports: depotExportsMap.get(d.producer.key)!, exportEfficiency: d.exportEff };
     }
   }
 
-  return { grid: nextGrid, flowSummary: summary, exportRate, infraEdges: nextInfraEdges, infraConstructionSites: nextInfraConstructionSites };
+  // Update Construction Sites
+  for (const d of constructionDemands) {
+    const site = grid[d.siteKey].constructionSite!;
+    const newDelivered = { ...site.delivered };
+    for (const [res, amt] of Object.entries(d.received)) newDelivered[res] = (newDelivered[res] || 0) + amt;
+    const allComplete = Object.entries(site.totalCost).every(([res, needed]) => (newDelivered[res] || 0) >= needed - 0.01);
+    if (allComplete) {
+      nextGrid[d.siteKey].buildingId = site.targetBuildingId;
+      nextGrid[d.siteKey].constructionSite = undefined;
+      nextGrid[d.siteKey].flowState = undefined;
+    } else {
+      nextGrid[d.siteKey].constructionSite = { ...site, delivered: newDelivered };
+    }
+    for (const [res, amt] of Object.entries(d.received)) addToMap(summary.consumed, res, amt);
+    for (const [res, amt] of Object.entries(d.distanceLoss)) addToMap(summary.lostToDistance, res, amt);
+  }
+
+  const nextInfraConstructionSites: InfraEdgeConstructionSite[] = [];
+  for (const d of infraDemands) {
+    const site = infraConstructionSites.find(s => s.edgeKey === d.edgeKey)!;
+    const newDelivered = { ...site.delivered };
+    for (const [res, amt] of Object.entries(d.received)) newDelivered[res] = (newDelivered[res] || 0) + amt;
+    const allComplete = Object.entries(site.totalCost).every(([res, needed]) => (newDelivered[res] || 0) >= needed - 0.01);
+    if (allComplete) { nextInfraEdges[d.edgeKey] = setEdgeType(nextInfraEdges[d.edgeKey], site.targetType); }
+    else { nextInfraConstructionSites.push({ ...site, delivered: newDelivered }); }
+    for (const [res, amt] of Object.entries(d.received)) addToMap(summary.consumed, res, amt);
+    for (const [res, amt] of Object.entries(d.distanceLoss)) addToMap(summary.lostToDistance, res, amt);
+  }
+
+    return { grid: nextGrid, flowSummary: summary, exportRate, infraEdges: nextInfraEdges, infraConstructionSites: nextInfraConstructionSites, flowPairs: aggregateFlowPairs(allFlowPairs) };
+
+  }
+
+export function computeMarketPrices(totalExports: ResourceMap): ResourceMap {
+  const prices: ResourceMap = {};
+  for (const [res, config] of Object.entries(MARKET_CONFIG)) {
+    const exported = totalExports[res] || 0;
+    prices[res] = config.base_value / (1 + exported / config.saturation);
+  }
+  return prices;
+}
+
+export function computeTradeValue(exportRate: ResourceMap, prices: ResourceMap): number {
+  let value = 0;
+  for (const res of Object.keys(exportRate)) {
+    const rate = exportRate[res] || 0;
+    const price = prices[res] || 0;
+    value += rate * price;
+  }
+  return value;
 }
