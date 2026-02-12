@@ -414,6 +414,40 @@ export const BUILDINGS: Record<string, BuildingType> = {
     unlockEra: 4,
   },
 
+  // --- NUCLEAR ---
+  uranium_mine: {
+    id: 'uranium_mine',
+    name: 'Uranium Mine',
+    description: 'Extracts rare uranium ore from deep deposits. Requires heavy machinery.',
+    cost: { steel: 200, concrete: 100, machinery: 50 },
+    inputs: { electricity: 2, tools: 0.3, machinery: 0.1, population: 0.5 },
+    outputs: { uranium_ore: 2 },
+    labor: 0,
+    requiresTerrain: ['mountain'],
+    requiresDeposit: 'uranium',
+    unlockEra: 5,
+  },
+  enrichment_plant: {
+    id: 'enrichment_plant',
+    name: 'Enrichment Plant',
+    description: 'Refines raw uranium ore into enriched fuel via centrifuge cascades.',
+    cost: { steel: 300, concrete: 200, machinery: 100 },
+    inputs: { uranium_ore: 2, electricity: 3, machinery: 0.25, population: 0.5 },
+    outputs: { enriched_uranium: 0.5 },
+    labor: 0,
+    unlockEra: 5,
+  },
+  nuclear_reactor: {
+    id: 'nuclear_reactor',
+    name: 'Nuclear Reactor',
+    description: 'Massive electricity from enriched uranium. One reactor replaces 7+ coal plants.',
+    cost: { steel: 500, concrete: 300, machinery: 200 },
+    inputs: { enriched_uranium: 0.5, concrete: 0.5, machinery: 0.1, population: 0.5 },
+    outputs: { electricity: 15 },
+    labor: 0,
+    unlockEra: 5,
+  },
+
   // --- CIVIC ---
   university: {
     id: 'university',
@@ -508,6 +542,7 @@ export const TERRAIN_COLORS: Record<TerrainType, string> = {
 export const DEPOSIT_COLORS: Record<DepositType, string> = {
   iron_ore: '#8b4513',  // Reddish-brown
   coal: '#2a2a2a',      // Dark grey
+  uranium: '#4ade80',   // Radioactive green
 };
 
 export const ZONE_OUTPUT_BONUS = 0.15;
@@ -524,13 +559,13 @@ export const ZONE_TYPES: Record<string, { name: string; description: string; col
     name: 'Mining',
     description: 'Extraction & quarrying',
     color: '#ff4500', // Neon Orange-Red
-    buildings: ['surface_mine', 'surface_coal', 'iron_mine', 'coal_mine', 'quarry', 'stone_camp', 'automated_quarry', 'automated_iron_mine', 'automated_coal_mine'],
+    buildings: ['surface_mine', 'surface_coal', 'iron_mine', 'coal_mine', 'quarry', 'stone_camp', 'automated_quarry', 'automated_iron_mine', 'automated_coal_mine', 'uranium_mine'],
   },
   industry: {
     name: 'Industry',
     description: 'Processing & manufacturing',
     color: '#00ffff', // Neon Cyan
-    buildings: ['workshop', 'bloomery', 'smelter', 'electric_smelter', 'tool_factory', 'automated_toolworks', 'concrete_factory', 'electric_kiln', 'steel_mill', 'electric_arc_furnace', 'coal_power_plant', 'solar_array', 'machine_works', 'precision_works', 'manufactory', 'assembly_line', 'export_port'],
+    buildings: ['workshop', 'bloomery', 'smelter', 'electric_smelter', 'tool_factory', 'automated_toolworks', 'concrete_factory', 'electric_kiln', 'steel_mill', 'electric_arc_furnace', 'coal_power_plant', 'solar_array', 'machine_works', 'precision_works', 'manufactory', 'assembly_line', 'export_port', 'enrichment_plant', 'nuclear_reactor'],
   },
   residential: {
     name: 'Residential',

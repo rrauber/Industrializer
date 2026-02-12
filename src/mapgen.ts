@@ -174,5 +174,18 @@ export function generateTerrain(radius: number, seed: number): { terrainGrid: Re
     }
   }
 
+  // --- Uranium deposits: exactly 3 on mountains without existing deposits ---
+  const availableMountains: string[] = [];
+  for (const [key, hex] of Object.entries(terrainGrid)) {
+    if (hex.terrain === 'mountain' && !hex.deposit) availableMountains.push(key);
+  }
+  // Fisher-Yates shuffle first 3 using seeded RNG
+  const uraniumCount = Math.min(3, availableMountains.length);
+  for (let i = 0; i < uraniumCount; i++) {
+    const j = i + Math.floor(rng() * (availableMountains.length - i));
+    [availableMountains[i], availableMountains[j]] = [availableMountains[j], availableMountains[i]];
+    terrainGrid[availableMountains[i]].deposit = 'uranium';
+  }
+
   return { terrainGrid, mapSeed: seed };
 }

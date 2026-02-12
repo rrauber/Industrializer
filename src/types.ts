@@ -1,6 +1,7 @@
 export type ResourceType = 'food' | 'wood' | 'stone' | 'iron_ore' | 'coal'
   | 'iron_ingot' | 'tools' | 'concrete' | 'steel'
-  | 'machinery' | 'goods' | 'electricity' | 'population';
+  | 'machinery' | 'goods' | 'electricity' | 'population'
+  | 'uranium_ore' | 'enriched_uranium';
 
 export interface ResourceMap {
   [key: string]: number;
@@ -8,7 +9,7 @@ export interface ResourceMap {
 
 export type TerrainType = 'plains' | 'forest' | 'mountain' | 'water';
 
-export type DepositType = 'iron_ore' | 'coal';
+export type DepositType = 'iron_ore' | 'coal' | 'uranium';
 
 export type InfrastructureType = 'road' | 'rail' | 'canal' | 'power_line' | 'hv_line';
 

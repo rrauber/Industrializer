@@ -12,22 +12,24 @@ function emptyFlowSummary(): FlowSummary {
 }
 
 // All resource types to display
-const ALL_RESOURCES: ResourceType[] = ['food', 'wood', 'stone', 'iron_ore', 'coal', 'iron_ingot', 'tools', 'concrete', 'steel', 'machinery', 'goods', 'electricity', 'population'];
+const ALL_RESOURCES: ResourceType[] = ['food', 'wood', 'stone', 'iron_ore', 'coal', 'iron_ingot', 'tools', 'concrete', 'steel', 'machinery', 'goods', 'electricity', 'population', 'uranium_ore', 'enriched_uranium'];
 
 const RESOURCE_COLORS: Record<string, string> = {
   food: '#84cc16', wood: '#4ade80', stone: '#a8a29e', iron_ore: '#f87171',
   coal: '#52525b', iron_ingot: '#fb923c', tools: '#38bdf8', concrete: '#94a3b8',
   steel: '#475569', machinery: '#818cf8', goods: '#e879f9', electricity: '#facc15',
   population: '#fbbf24',
+  uranium_ore: '#4ade80',
+  enriched_uranium: '#22c55e',
 };
 
 // LIGHTER COLORS for buildings
 const BUILDING_COLORS: Record<string, string> = {
   forager: '#aaddaa', farm: '#aaddaa', wood_camp: '#aaddaa', lumber_mill: '#aaddaa', industrial_farm: '#aaddaa', automated_sawmill: '#aaddaa',
-  stone_camp: '#eecfa1', quarry: '#eecfa1', surface_mine: '#eecfa1', surface_coal: '#eecfa1', iron_mine: '#eecfa1', coal_mine: '#eecfa1', automated_quarry: '#eecfa1', automated_iron_mine: '#eecfa1', automated_coal_mine: '#eecfa1',
+  stone_camp: '#eecfa1', quarry: '#eecfa1', surface_mine: '#eecfa1', surface_coal: '#eecfa1', iron_mine: '#eecfa1', coal_mine: '#eecfa1', automated_quarry: '#eecfa1', automated_iron_mine: '#eecfa1', automated_coal_mine: '#eecfa1', uranium_mine: '#eecfa1',
   bloomery: '#aabccf', smelter: '#aabccf', workshop: '#aabccf', tool_factory: '#aabccf', concrete_factory: '#aabccf', steel_mill: '#aabccf', machine_works: '#aabccf', manufactory: '#aabccf',
   coal_power_plant: '#aabccf', solar_array: '#aabccf', electric_arc_furnace: '#aabccf', automated_toolworks: '#aabccf', assembly_line: '#aabccf',
-  electric_smelter: '#aabccf', electric_kiln: '#aabccf', precision_works: '#aabccf',
+  electric_smelter: '#aabccf', electric_kiln: '#aabccf', precision_works: '#aabccf', enrichment_plant: '#aabccf', nuclear_reactor: '#aabccf',
   export_port: '#ffe082', trade_depot: '#ffe082', station: '#ffe082',
   settlement: '#ffccbc', town: '#ffccbc', city: '#ffccbc', university: '#ffccbc',
 };
@@ -201,6 +203,7 @@ const App: React.FC = () => {
   const [hoveredHex, setHoveredHex] = useState<string | null>(null);
   const [infraPlacementMode, setInfraPlacementMode] = useState<{ type: InfrastructureType; fromHex: string; } | null>(null);
   const [buildTab, setBuildTab] = useState<'Agri' | 'Mine' | 'Ind' | 'Civic'>('Agri');
+  const [chainTierOverrides, setChainTierOverrides] = useState<Record<string, number>>({});
   const [hoveredBuildDelta, setHoveredBuildDelta] = useState<Record<string, number> | null>(null);
   const [showResourceLedger, setShowResourceLedger] = useState(false);
   const [gamePaused, setGamePaused] = useState(false);
@@ -885,7 +888,7 @@ const App: React.FC = () => {
       if (edge.power === 'power_line') {
         elements.push(<g key={`${ek}-p`} className="pointer-events-none"><line x1={pa.x} y1={pa.y} x2={pb.x} y2={pb.y} stroke="#854d0e" strokeWidth={1.5} strokeLinecap="round" opacity={0.6} /><line x1={pa.x} y1={pa.y} x2={pb.x} y2={pb.y} stroke="#eab308" strokeWidth={1} strokeDasharray="4,3" /></g>);
       } else if (edge.power === 'hv_line') {
-        elements.push(<g key={`${ek}-p`} className="pointer-events-none"><line x1={pa.x} y1={pa.y} x2={pb.x} y2={pb.y} stroke="#854d0e" strokeWidth={2.5} strokeLinecap="round" opacity={0.6} /><line x1={pa.x} y1={pa.y} x2={pb.x} y2={pb.y} stroke="#facc15" strokeWidth={1.5} strokeLinecap="round" /></g>);
+        elements.push(<g key={`${ek}-p`} className="pointer-events-none"><line x1={pa.x} y1={pa.y} x2={pb.x} y2={pb.y} stroke="#1e3a5f" strokeWidth={2.5} strokeLinecap="round" opacity={0.6} /><line x1={pa.x} y1={pa.y} x2={pb.x} y2={pb.y} stroke="#38bdf8" strokeWidth={1.5} strokeLinecap="round" /></g>);
       }
     }
     for (const site of gameState.infraConstructionSites) {
@@ -893,7 +896,7 @@ const App: React.FC = () => {
       const pb = getHexPixel(site.hexB.q, site.hexB.r);
       const progress = getEdgeConstructionProgress(site as any);
       const midX = (pa.x + pb.x) / 2, midY = (pa.y + pb.y) / 2;
-      const color = site.targetType === 'canal' ? '#42a5f5' : site.targetType === 'rail' ? '#8d6e63' : site.targetType === 'power_line' ? '#eab308' : site.targetType === 'hv_line' ? '#facc15' : '#9e9e9e';
+      const color = site.targetType === 'canal' ? '#42a5f5' : site.targetType === 'rail' ? '#8d6e63' : site.targetType === 'power_line' ? '#eab308' : site.targetType === 'hv_line' ? '#38bdf8' : '#9e9e9e';
       elements.push(<g key={`cs-${site.edgeKey}`} className="pointer-events-none"><line x1={pa.x} y1={pa.y} x2={pb.x} y2={pb.y} stroke={color} strokeWidth={3} strokeLinecap="round" strokeDasharray="4,4" opacity={0.35} /><rect x={midX - 8} y={midY - 1.5} width={16} height={3} fill="#111" rx={1.5} opacity={0.8} /><rect x={midX - 8} y={midY - 1.5} width={16 * progress} height={3} fill="#eab308" rx={1.5} /></g>);
     }
     return elements;
@@ -1188,7 +1191,7 @@ const App: React.FC = () => {
                                        {type === 'rail' && <div className="w-6 h-1 bg-amber-700 border-t border-b border-dashed border-amber-900" />}
                                        {type === 'canal' && <div className="w-6 h-1 bg-blue-500 opacity-60 rounded-full" />}
                                        {type === 'power_line' && <div className="w-6 h-1 bg-yellow-400 rounded-full" />}
-                                       {type === 'hv_line' && <div className="w-6 h-1 bg-yellow-300 rounded-full shadow-[0_0_4px_#facc15]" />}
+                                       {type === 'hv_line' && <div className="w-6 h-1 bg-sky-400 rounded-full shadow-[0_0_4px_#38bdf8]" />}
                                        <span className="text-[10px] font-black uppercase text-zinc-400 tracking-wider">{{ road: 'Road', rail: 'Rail', canal: 'Canal', power_line: 'Power', hv_line: 'HV' }[type]}</span>
                                        <div className="flex flex-wrap justify-center gap-2 mt-1">
                                           {isFree ? (
@@ -1522,7 +1525,7 @@ const App: React.FC = () => {
                                        {type === 'rail' && <div className="w-6 h-1 bg-amber-700 border-t border-b border-dashed border-amber-900" />}
                                        {type === 'canal' && <div className="w-6 h-1 bg-blue-500 opacity-60 rounded-full" />}
                                        {type === 'power_line' && <div className="w-6 h-1 bg-yellow-400 rounded-full" />}
-                                       {type === 'hv_line' && <div className="w-6 h-1 bg-yellow-300 rounded-full shadow-[0_0_4px_#facc15]" />}
+                                       {type === 'hv_line' && <div className="w-6 h-1 bg-sky-400 rounded-full shadow-[0_0_4px_#38bdf8]" />}
                                        <span className="text-[10px] font-black uppercase text-zinc-400 tracking-wider">{{ road: 'Road', rail: 'Rail', canal: 'Canal', power_line: 'Power', hv_line: 'HV' }[type]}</span>
                                        <div className="flex flex-wrap justify-center gap-2 mt-1">
                                           {isFree ? (
@@ -1567,29 +1570,39 @@ const App: React.FC = () => {
 
                            <div className="grid grid-cols-2 gap-2">
                               {(() => {
-                                 const groups: Record<string, string[]> = {
-                                    'Agri': ['forager', 'farm', 'industrial_farm', 'wood_camp', 'lumber_mill', 'automated_sawmill'],
-                                    'Mine': ['stone_camp', 'quarry', 'automated_quarry', 'surface_mine', 'iron_mine', 'automated_iron_mine', 'surface_coal', 'coal_mine', 'automated_coal_mine'],
-                                    'Ind': ['bloomery', 'smelter', 'workshop', 'tool_factory', 'concrete_factory', 'steel_mill', 'machine_works', 'manufactory', 'coal_power_plant', 'solar_array', 'electric_arc_furnace', 'electric_smelter', 'electric_kiln', 'precision_works', 'automated_toolworks', 'assembly_line'],
-                                    'Civic': ['settlement', 'town', 'city', 'trade_depot', 'station', 'export_port', 'university']
+                                 const UPGRADE_CHAINS: Record<string, string[][]> = {
+                                    'Agri': [['forager', 'farm', 'industrial_farm'], ['wood_camp', 'lumber_mill', 'automated_sawmill']],
+                                    'Mine': [['stone_camp', 'quarry', 'automated_quarry'], ['surface_mine', 'iron_mine', 'automated_iron_mine'], ['surface_coal', 'coal_mine', 'automated_coal_mine'], ['uranium_mine']],
+                                    'Ind': [['bloomery', 'smelter', 'electric_smelter'], ['workshop', 'tool_factory', 'automated_toolworks'], ['concrete_factory', 'electric_kiln'], ['steel_mill', 'electric_arc_furnace'], ['machine_works', 'precision_works'], ['manufactory', 'assembly_line'], ['coal_power_plant'], ['solar_array'], ['enrichment_plant'], ['nuclear_reactor']],
+                                    'Civic': [['settlement', 'town', 'city'], ['trade_depot', 'station'], ['export_port'], ['university']]
                                  };
-                                 return groups[buildTab].map(id => {
+                                 const TIER_LABELS = ['I', 'II', 'III'];
+                                 const localTerrain = getAssociatedTerrains(selectedHexData.q, selectedHexData.r);
+                                 const hasCanal = countHexConnections(selectedHexData.q, selectedHexData.r, gameState.infraEdges, 'canal') > 0;
+
+                                 return UPGRADE_CHAINS[buildTab].map(chain => {
+                                    const unlockedTiers = chain.filter(id => BUILDINGS[id].unlockEra <= gameState.era);
+                                    if (unlockedTiers.length === 0) return null;
+
+                                    const chainKey = chain[0];
+                                    const override = chainTierOverrides[chainKey];
+                                    const selectedIdx = override !== undefined && override < unlockedTiers.length ? override : unlockedTiers.length - 1;
+                                    const id = unlockedTiers[selectedIdx];
                                     const b = BUILDINGS[id];
-                                    if (b.unlockEra > gameState.era) return null;
+
+                                    // Terrain check
                                     const requires = b.requiresTerrain;
-                                    const localTerrain = getAssociatedTerrains(selectedHexData.q, selectedHexData.r);
-                                    const hasCanal = countHexConnections(selectedHexData.q, selectedHexData.r, gameState.infraEdges, 'canal') > 0;
                                     const canBuild = !requires || requires.some(t => localTerrain.includes(t) || (t === 'water' && hasCanal));
                                     if (!canBuild) return null;
                                     // Deposit check
                                     if (b.requiresDeposit) {
-                                       const terrainHex = gameState.terrainGrid[selectedHex];
+                                       const terrainHex = gameState.terrainGrid[selectedHex!];
                                        if (!terrainHex || terrainHex.deposit !== b.requiresDeposit) return null;
                                     }
 
                                     return (
                                        <button
-                                          key={id}
+                                          key={chainKey}
                                           onClick={() => buildBuilding(id)}
                                           onMouseEnter={() => {
                                              const d: Record<string, number> = {};
@@ -1601,6 +1614,29 @@ const App: React.FC = () => {
                                           className="glass-card flex flex-col items-center p-3 rounded-xl gap-2 text-center group relative overflow-hidden"
                                        >
                                           <div className="absolute inset-0 bg-gradient-to-br from-white/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />
+
+                                          {/* Tier selector */}
+                                          {unlockedTiers.length > 1 && (
+                                             <div className="flex gap-1 z-10">
+                                                {unlockedTiers.map((tierId, ti) => (
+                                                   <span
+                                                      key={tierId}
+                                                      onClick={(e) => {
+                                                         e.stopPropagation();
+                                                         setChainTierOverrides(prev => ({ ...prev, [chainKey]: ti }));
+                                                      }}
+                                                      style={{
+                                                         backgroundColor: ti === selectedIdx ? BUILDING_COLORS[id] : undefined,
+                                                         color: ti === selectedIdx ? '#05080a' : undefined,
+                                                      }}
+                                                      className={`px-1.5 py-0.5 rounded text-[9px] font-black cursor-pointer transition-all ${ti === selectedIdx ? 'shadow-sm' : 'text-zinc-600 hover:text-zinc-400 bg-white/5 hover:bg-white/10'}`}
+                                                   >
+                                                      {TIER_LABELS[ti]}
+                                                   </span>
+                                                ))}
+                                             </div>
+                                          )}
+
                                           <div className="w-10 h-10 rounded-lg bg-[#0a0e12] border border-white/10 flex items-center justify-center group-hover:scale-110 transition-transform duration-300">
                                              {BuildingIcons[id] && (
                                                 <svg width="24" height="24" viewBox="-12 -12 24 24">
@@ -1610,7 +1646,7 @@ const App: React.FC = () => {
                                           </div>
                                           <div className="flex flex-col w-full">
                                              <span className="text-[11px] font-bold text-zinc-300 group-hover:text-white leading-tight">{b.name}</span>
-                                             
+
                                              {/* Costs */}
                                              <div className="flex flex-wrap justify-center gap-x-3 gap-y-1 mt-1.5">
                                                 {Object.keys(b.cost).length === 0 ? (

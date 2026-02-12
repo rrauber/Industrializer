@@ -379,9 +379,22 @@ const ALL_EXPORTABLE_RESOURCES: string[] = [
   'iron_ingot', 'tools', 'concrete', 'steel', 'machinery', 'goods',
 ];
 
-function getExportEfficiency(startKey: string, grid: Record<string, HexData>, infraEdges: Record<string, InfrastructureEdge>, getTerrains: GetTerrainsFn): number {
+function getExportEfficiency(startKey: string, grid: Record<string, HexData>, infraEdges: Record<string, InfrastructureEdge>, getTerrains: GetTerrainsFn, hubZones?: { hubKey: string; hexKeys: Set<string> }[]): number {
   const startHex = grid[startKey];
   if (!startHex) return 0;
+  // Build hub zone lookups for free transit (same pattern as precomputeDistances)
+  const hexToHubZones = new Map<string, { hubKey: string; hexKeys: Set<string> }[]>();
+  const hubCenterZones = new Map<string, { hubKey: string; hexKeys: Set<string> }[]>();
+  if (hubZones) {
+    for (const zone of hubZones) {
+      for (const hk of zone.hexKeys) {
+        if (!hexToHubZones.has(hk)) hexToHubZones.set(hk, []);
+        hexToHubZones.get(hk)!.push(zone);
+      }
+      if (!hubCenterZones.has(zone.hubKey)) hubCenterZones.set(zone.hubKey, []);
+      hubCenterZones.get(zone.hubKey)!.push(zone);
+    }
+  }
   const terrainCache = new Map<string, TerrainType[]>();
   function getCachedTerrains(q: number, r: number): TerrainType[] {
     const k = hexKey(q, r);
@@ -400,13 +413,20 @@ function getExportEfficiency(startKey: string, grid: Record<string, HexData>, in
     return false;
   }
   function getStepEfficiency(fromQ: number, fromR: number, toQ: number, toR: number): number | null {
+    const destTerrains = getCachedTerrains(toQ, toR);
+    if (destTerrains.includes('water')) {
+      // Only enter water from a port or from another water hex
+      const fromTerrains = getCachedTerrains(fromQ, fromR);
+      const fromKey = hexKey(fromQ, fromR);
+      if (fromTerrains.includes('water') || grid[fromKey]?.buildingId === 'export_port') {
+        return 1.0;
+      }
+      return null; // Cannot enter water otherwise
+    }
     const ek = getEdgeKey(fromQ, fromR, toQ, toR);
     const edge = infraEdges[ek];
-    let best: number | null = null;
-    if (edge?.transport) best = INFRA_EXPORT_EFFICIENCY[edge.transport];
-    const destTerrains = getCachedTerrains(toQ, toR);
-    if (destTerrains.includes('water')) best = Math.max(best ?? 0, 1.0);
-    return best;
+    if (edge?.transport) return INFRA_EXPORT_EFFICIENCY[edge.transport];
+    return null;
   }
   if (isAtMapEdge(startHex.q, startHex.r)) return 1.0;
   const bestSeen = new Map<string, number>();
@@ -440,6 +460,32 @@ function getExportEfficiency(startKey: string, grid: Record<string, HexData>, in
         queue.push([nk, pathEff]);
       }
     }
+    // Hub zone: spoke → hub (free hop, efficiency 1.0 so pathEff = minEff)
+    const hubsForHex = hexToHubZones.get(cur);
+    if (hubsForHex) {
+      for (const zone of hubsForHex) {
+        if (zone.hubKey === cur || !grid[zone.hubKey]) continue;
+        const prev = bestSeen.get(zone.hubKey) ?? 0;
+        if (minEff > prev) {
+          bestSeen.set(zone.hubKey, minEff);
+          queue.push([zone.hubKey, minEff]);
+        }
+      }
+    }
+    // Hub zone: hub → spokes (free hop, efficiency 1.0 so pathEff = minEff)
+    const centerZones = hubCenterZones.get(cur);
+    if (centerZones) {
+      for (const zone of centerZones) {
+        for (const destKey of zone.hexKeys) {
+          if (destKey === cur || !grid[destKey]) continue;
+          const prev = bestSeen.get(destKey) ?? 0;
+          if (minEff > prev) {
+            bestSeen.set(destKey, minEff);
+            queue.push([destKey, minEff]);
+          }
+        }
+      }
+    }
   }
   return bestEfficiency;
 }
@@ -450,12 +496,26 @@ export function getExportPath(
   grid: Record<string, HexData>,
   infraEdges: Record<string, InfrastructureEdge>,
   getTerrains: GetTerrainsFn | TerrainAssociations,
+  hubZones?: { hubKey: string; hexKeys: Set<string> }[],
 ): { q: number; r: number }[] | null {
   const startHex = grid[startKey];
   if (!startHex) return null;
   const getTerrainsFn: GetTerrainsFn = typeof getTerrains === 'function'
     ? getTerrains
     : (q: number, r: number) => (getTerrains as TerrainAssociations)[hexKey(q, r)] || [];
+  // Build hub zone lookups for free transit
+  const hexToHubZones = new Map<string, { hubKey: string; hexKeys: Set<string> }[]>();
+  const hubCenterZones = new Map<string, { hubKey: string; hexKeys: Set<string> }[]>();
+  if (hubZones) {
+    for (const zone of hubZones) {
+      for (const hk of zone.hexKeys) {
+        if (!hexToHubZones.has(hk)) hexToHubZones.set(hk, []);
+        hexToHubZones.get(hk)!.push(zone);
+      }
+      if (!hubCenterZones.has(zone.hubKey)) hubCenterZones.set(zone.hubKey, []);
+      hubCenterZones.get(zone.hubKey)!.push(zone);
+    }
+  }
   const terrainCache = new Map<string, TerrainType[]>();
   function getCachedTerrains(q: number, r: number): TerrainType[] {
     const k = hexKey(q, r);
@@ -474,13 +534,19 @@ export function getExportPath(
     return false;
   }
   function getStepEfficiency(fromQ: number, fromR: number, toQ: number, toR: number): number | null {
+    const destTerrains = getCachedTerrains(toQ, toR);
+    if (destTerrains.includes('water')) {
+      const fromTerrains = getCachedTerrains(fromQ, fromR);
+      const fromKey = hexKey(fromQ, fromR);
+      if (fromTerrains.includes('water') || grid[fromKey]?.buildingId === 'export_port') {
+        return 1.0;
+      }
+      return null;
+    }
     const ek = getEdgeKey(fromQ, fromR, toQ, toR);
     const edge = infraEdges[ek];
-    let best: number | null = null;
-    if (edge?.transport) best = INFRA_EXPORT_EFFICIENCY[edge.transport];
-    const destTerrains = getCachedTerrains(toQ, toR);
-    if (destTerrains.includes('water')) best = Math.max(best ?? 0, 1.0);
-    return best;
+    if (edge?.transport) return INFRA_EXPORT_EFFICIENCY[edge.transport];
+    return null;
   }
   if (isAtMapEdge(startHex.q, startHex.r)) return [{ q: startHex.q, r: startHex.r }];
 
@@ -523,6 +589,34 @@ export function getExportPath(
         bestSeen.set(nk, pathEff);
         parent.set(nk, cur);
         queue.push([nk, pathEff]);
+      }
+    }
+    // Hub zone: spoke → hub (free hop)
+    const hubsForHex = hexToHubZones.get(cur);
+    if (hubsForHex) {
+      for (const zone of hubsForHex) {
+        if (zone.hubKey === cur || !grid[zone.hubKey]) continue;
+        const prev = bestSeen.get(zone.hubKey) ?? 0;
+        if (minEff > prev) {
+          bestSeen.set(zone.hubKey, minEff);
+          parent.set(zone.hubKey, cur);
+          queue.push([zone.hubKey, minEff]);
+        }
+      }
+    }
+    // Hub zone: hub → spokes (free hop)
+    const centerZones = hubCenterZones.get(cur);
+    if (centerZones) {
+      for (const zone of centerZones) {
+        for (const destKey of zone.hexKeys) {
+          if (destKey === cur || !grid[destKey]) continue;
+          const prev = bestSeen.get(destKey) ?? 0;
+          if (minEff > prev) {
+            bestSeen.set(destKey, minEff);
+            parent.set(destKey, cur);
+            queue.push([destKey, minEff]);
+          }
+        }
       }
     }
   }
@@ -993,7 +1087,7 @@ export function simulateTick(
   function getCachedExportEfficiency(key: string): number {
     const cached = exportEffCache.get(key);
     if (cached !== undefined) return cached;
-    const eff = getExportEfficiency(key, grid, infraEdges, getTerrains);
+    const eff = getExportEfficiency(key, grid, infraEdges, getTerrains, hubZones);
     exportEffCache.set(key, eff);
     return eff;
   }
@@ -1073,7 +1167,7 @@ export function simulateTick(
   // All depots/stations share surplus proportionally based on transfer efficiency
   const depots: { producer: ProducerState; exportEff: number }[] = [];
   for (const depot of producers) {
-    if (depot.key === '__base__' || (depot.buildingId !== 'trade_depot' && depot.buildingId !== 'station')) continue;
+    if (depot.key === '__base__' || (depot.buildingId !== 'trade_depot' && depot.buildingId !== 'station' && depot.buildingId !== 'export_port')) continue;
     const depotExportEff = getCachedExportEfficiency(depot.key);
     if (depotExportEff <= 0) continue;
     depots.push({ producer: depot, exportEff: depotExportEff });
@@ -1128,7 +1222,12 @@ export function simulateTick(
   for (const d of depots) {
     const flowState = nextGrid[d.producer.key].flowState;
     if (flowState) {
-      nextGrid[d.producer.key].flowState = { ...flowState, exports: depotExportsMap.get(d.producer.key)!, exportEfficiency: d.exportEff };
+      // Additive merge: don't overwrite existing exports (e.g. export_port goods from Pass 5)
+      const mergedExports = { ...flowState.exports };
+      for (const [res, amt] of Object.entries(depotExportsMap.get(d.producer.key)!)) {
+        mergedExports[res] = (mergedExports[res] || 0) + amt;
+      }
+      nextGrid[d.producer.key].flowState = { ...flowState, exports: mergedExports, exportEfficiency: d.exportEff };
     }
   }
 

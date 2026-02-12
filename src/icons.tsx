@@ -316,9 +316,10 @@ export const BuildingIcons: Record<string, React.FC<IconProps>> = {
 
   electric_arc_furnace: (props) => (
     <SvgWrapper {...props}>
-      <path d="M6 19h12" />
-      <path d="M8 19L10 5h4l2 14" />
-      <path d="M14 3l-4 6h4l-4 6" strokeWidth="1.5" />
+      <path d="M3 7h12" strokeWidth="2.5" />
+      <path d="M3 17h12" strokeWidth="2.5" />
+      <path d="M9 7v10" strokeWidth="2" />
+      <path d="M18 5l-3 5h3l-3 5" strokeWidth="1.3" />
     </SvgWrapper>
   ),
 
@@ -341,6 +342,42 @@ export const BuildingIcons: Record<string, React.FC<IconProps>> = {
       <path d="M12 15h3" strokeWidth="1.5" />
       <circle cx="7.5" cy="13" r="1" fill={props.color} fillOpacity="0.4" stroke="none" />
       <circle cx="13.5" cy="13" r="1" fill={props.color} fillOpacity="0.4" stroke="none" />
+    </SvgWrapper>
+  ),
+
+  // --- NUCLEAR ---
+
+  uranium_mine: (props) => (
+    <SvgWrapper {...props}>
+      <path d="M6 20V10a6 6 0 1 1 12 0v10" />
+      <path d="M6 20h12" />
+      <circle cx="12" cy="13" r="3" />
+      <path d="M12 10.5v1" strokeWidth="1.5" />
+      <path d="M10 14.5l-0.5 0.87" strokeWidth="1.5" />
+      <path d="M14 14.5l0.5 0.87" strokeWidth="1.5" />
+    </SvgWrapper>
+  ),
+
+  enrichment_plant: (props) => (
+    <SvgWrapper {...props}>
+      <rect x="4" y="8" width="16" height="12" rx="1" />
+      <path d="M8 8V5" strokeWidth="1.5" />
+      <path d="M12 8V5" strokeWidth="1.5" />
+      <path d="M16 8V5" strokeWidth="1.5" />
+      <ellipse cx="8" cy="14" rx="2" ry="4" />
+      <ellipse cx="12" cy="14" rx="2" ry="4" />
+      <ellipse cx="16" cy="14" rx="2" ry="4" />
+    </SvgWrapper>
+  ),
+
+  nuclear_reactor: (props) => (
+    <SvgWrapper {...props}>
+      <path d="M4 20h16" />
+      <path d="M6 20c0 0 0-6 6-14c6 8 6 14 6 14" />
+      <circle cx="12" cy="14" r="3" />
+      <path d="M12 11.5v1" strokeWidth="1.5" />
+      <path d="M10 15.5l-0.5 0.87" strokeWidth="1.5" />
+      <path d="M14 15.5l0.5 0.87" strokeWidth="1.5" />
     </SvgWrapper>
   ),
 
@@ -479,6 +516,21 @@ export const ResourceIcons: Record<string, React.FC<IconProps>> = {
   electricity: (props) => (
     <SvgWrapper {...props}>
       <path d="M13 2L4 14h7l-1 8 9-12h-7z" fill={props.color} fillOpacity="0.2" />
+    </SvgWrapper>
+  ),
+  uranium_ore: (props) => (
+    <SvgWrapper {...props}>
+      <path d="M4 20l4-12 6-4 6 4 2 12z" />
+      <circle cx="12" cy="13" r="3" fill={props.color} fillOpacity="0.3" stroke="none" />
+      <circle cx="12" cy="13" r="3" />
+    </SvgWrapper>
+  ),
+  enriched_uranium: (props) => (
+    <SvgWrapper {...props}>
+      <rect x="9" y="3" width="6" height="18" rx="2" />
+      <circle cx="12" cy="12" r="2" fill={props.color} fillOpacity="0.4" stroke="none" />
+      <path d="M9 8h6" strokeOpacity="0.4" />
+      <path d="M9 16h6" strokeOpacity="0.4" />
     </SvgWrapper>
   ),
   population: (props) => (
